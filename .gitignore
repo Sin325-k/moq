@@ -58,3 +58,5 @@ jsr.json
 
 # msys/cygwin crash dumps, from running the shell scripts on Windows.
 *.stackdump
+*.save
+*.save.*
