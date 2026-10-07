@@ -6,10 +6,13 @@ RELAY_URL = "https://localhost:4443"
 BROADCAST_NAME = "experiment/audio-priority/minimal"
 TRACK_NAME = "test"
 
-MESSAGE_COUNT = 10
+#送信の条件
+MESSAGE_COUNT = 100
+PAYLOAD_SIZE  = 1945
+INTERVAL      = 0.020
 
 async def main() -> None:
-	moq.log_level("debug")
+	#moq.log_level("debug")
 	print(f"relayへ接続します: {RELAY_URL}")
 	async with moq.Client(RELAY_URL,tls_verify=False) as client:
 		
@@ -25,13 +28,15 @@ async def main() -> None:
 		#groupの作成
 		for i in range(MESSAGE_COUNT):
 			group = track.append_group()
-			data = f"message{i}".encode()
-			group.write_frame(data,timestamp_us=i*1000000)
+			#data = f"message{i}".encode()
+			data = bytes(PAYLOAD_SIZE)
+			group.write_frame(data,timestamp_us=i*20000)
 			
 			#groupの終了
 			group.finish()
 			
-			await asyncio.sleep(1)
+			#await asyncio.sleep(1)
+			await asyncio.sleep(INTERVAL)
 
 		#trackの終了
 		track.finish()
