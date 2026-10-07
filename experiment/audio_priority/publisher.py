@@ -4,7 +4,9 @@ import moq
 
 RELAY_URL = "https://localhost:4443"
 BROADCAST_NAME = "experiment/audio-priority/minimal"
-TRACK_NAME = "test"
+#TRACK_NAME = "test"
+AUDIO_TRACK_NAME="audio"
+BACKGROUND_TRACK_NAME="background"
 
 #送信の条件
 MESSAGE_COUNT = 100
@@ -20,26 +22,41 @@ async def main() -> None:
 		broadcast = client.create_broadcast(BROADCAST_NAME)
 
 		#trackの作成
-		track = broadcast.publish_track(TRACK_NAME)
+		#track = broadcast.publish_track(TRACK_NAME)
+		audio_track = broadcast.publish_track(AUDIO_TRACK_NAME)
+		background_track = broadcast.publish_track(BACKGROUND_TRACK_NAME)
 
 		#Broadcastの公開
 		broadcast.announce()
 
 		#groupの作成
 		for i in range(MESSAGE_COUNT):
-			group = track.append_group()
+			#group = track.append_group()
 			#data = f"message{i}".encode()
-			data = bytes(PAYLOAD_SIZE)
-			group.write_frame(data,timestamp_us=i*20000)
+			#data = bytes(PAYLOAD_SIZE)
+			#group.write_frame(data,timestamp_us=i*20000)
 			
 			#groupの終了
-			group.finish()
-			
+			#group.finish()
+
+			#音声データ
+			audio_group = audio_track.append_group()
+			audio_data = bytes(PAYLOAD_SIZE)
+			audio_group.write_frame(audio_data, timestamp_us=i*20000)
+			audio_group.finish()
+
+			#背景データ
+			background_group =background_track.append_group()
+			background_data = bytes(PAYLOAD_SIZE)
+			background_group.write_frame(background_data, timestamp_us=i*20000)
+			background_group.finish()
+
 			#await asyncio.sleep(1)
 			await asyncio.sleep(INTERVAL)
 
 		#trackの終了
-		track.finish()
+		audio_track.finish()
+		background_track.finish()
 
 		#broadcastの終了
 		broadcast.close() 
