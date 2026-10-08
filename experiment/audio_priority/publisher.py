@@ -31,6 +31,10 @@ async def main() -> None:
 
 		#groupの作成
 		for i in range(MESSAGE_COUNT):
+
+			#seququence番号
+			seq = i.to_bytes(4, byteorder = "big")
+
 			#group = track.append_group()
 			#data = f"message{i}".encode()
 			#data = bytes(PAYLOAD_SIZE)
@@ -41,13 +45,13 @@ async def main() -> None:
 
 			#音声データ
 			audio_group = audio_track.append_group()
-			audio_data = bytes(PAYLOAD_SIZE)
+			audio_data = seq + bytes(PAYLOAD_SIZE - 4)
 			audio_group.write_frame(audio_data, timestamp_us=i*20000)
 			audio_group.finish()
 
 			#背景データ
 			background_group =background_track.append_group()
-			background_data = bytes(PAYLOAD_SIZE)
+			background_data = seq + bytes(PAYLOAD_SIZE - 4)
 			background_group.write_frame(background_data, timestamp_us=i*20000)
 			background_group.finish()
 
