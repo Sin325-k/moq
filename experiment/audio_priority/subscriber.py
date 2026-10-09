@@ -2,6 +2,7 @@ import asyncio
 import moq
 import time
 import csv #CSVファイルの保存に利用
+from datetime import datetime
 
 RELAY_URL="https://localhost:4443"
 BROADCAST_NAME="experiment/audio-priority/minimal"
@@ -11,7 +12,8 @@ BROADCAST_NAME="experiment/audio-priority/minimal"
 AUDIO_TRACK_NAME = "audio"
 BACKGROUND_TRACK_NAME = "background"
 MESSAGE_COUNT = 100
-CSV_FILE = "results.csv"#結果保存用
+#CSV_FILE = "results.csv"#結果保存用
+CSV_FILE = f"results_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv"
 
 
 async def receive_track(name,track,writer):
