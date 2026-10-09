@@ -1,6 +1,7 @@
 import asyncio
 import moq
 import time
+import csv #CSVファイルの保存に利用
 
 RELAY_URL="https://localhost:4443"
 BROADCAST_NAME="experiment/audio-priority/minimal"
@@ -10,9 +11,10 @@ BROADCAST_NAME="experiment/audio-priority/minimal"
 AUDIO_TRACK_NAME = "audio"
 BACKGROUND_TRACK_NAME = "background"
 MESSAGE_COUNT = 100
+CSV_FILE = "results.csv"#結果保存用
 
 
-async def receive_track(name,track):
+async def receive_track(name,track,writer):
     count = 0
 
     async for group in track:
@@ -40,6 +42,15 @@ async def receive_track(name,track):
 
             delay_ms = delay_ns / 1000000
 
+            writer.writerow([
+                name,
+                seq,
+                len(frame.payload),
+                send_time,
+                receive_time,
+                delay_ms
+            ])
+
             #print(data)
             print(
                 f"{name}:"
@@ -56,16 +67,27 @@ async def receive_track(name,track):
 
 async def main() ->None:
     #moq.log_level("debug")
+    with open(CSV_FILE,"w",newline="") as csv_file:
+        writer = csv.writer(csv_file)
 
-    async with moq.Client(RELAY_URL, tls_verify=False) as client:
-        broadcast = await client.announced_broadcast(BROADCAST_NAME)
-        #track = await broadcast.subscribe_track(TRACK_NAME)
-        audio_track = await broadcast.subscribe_track(AUDIO_TRACK_NAME)
-        background_track = await broadcast.subscribe_track(BACKGROUND_TRACK_NAME)
+        writer.writerow([
+            "track",
+            "seq",
+            "size",
+            "send_time_ns",
+            "received_time_ns",
+            "delay_ms"
+        ])
+
+        async with moq.Client(RELAY_URL, tls_verify=False) as client:
+            broadcast = await client.announced_broadcast(BROADCAST_NAME)
+            #track = await broadcast.subscribe_track(TRACK_NAME)
+            audio_track = await broadcast.subscribe_track(AUDIO_TRACK_NAME)
+            background_track = await broadcast.subscribe_track(BACKGROUND_TRACK_NAME)
         
-        await asyncio.gather(
-            receive_track("audio",audio_track),
-            receive_track("background",background_track)
-        )        
+            await asyncio.gather(
+                receive_track("audio",audio_track,writer),
+                receive_track("background",background_track,writer)
+            )        
 
 asyncio.run(main())
