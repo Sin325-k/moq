@@ -1,5 +1,6 @@
 import asyncio
 import moq
+import time
 
 RELAY_URL="https://localhost:4443"
 BROADCAST_NAME="experiment/audio-priority/minimal"
@@ -16,18 +17,39 @@ async def receive_track(name,track):
 
     async for group in track:
         async for frame in group:
+
+            #受信した時刻を取得
+            receive_time = time.monotonic_ns()
+
             count += 1
             #data = frame.payload.decode()
+
+            seq = int.from_bytes(
+                frame.payload[0:4],
+                byteorder = "big"
+            )
+
+            send_time = int.from_bytes(
+                frame.payload[4:12],
+                byteorder = "big"
+            )
+
+
+            #遅延を測定
+            delay_ns = receive_time - send_time
+
+            delay_ms = delay_ns / 1000000
 
             #print(data)
             print(
                 f"{name}:"
-                f"frame{count}:"
-                f"size{len(frame.payload)}bytes"
+                f"frame{seq}:"
+                f"size{len(frame.payload)}bytes:"
+                f"delay={delay_ms:.3f}ms"
             )
 
             if count == MESSAGE_COUNT:
-                print("受信完了")
+                print(f"{name}:受信完了")
                 track.cancel()
                 return
 

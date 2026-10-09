@@ -1,5 +1,6 @@
 import asyncio
 import moq
+import time #時刻の測定に必要
 
 
 RELAY_URL = "https://localhost:4443"
@@ -43,15 +44,25 @@ async def main() -> None:
 			#groupの終了
 			#group.finish()
 
-			#音声データ
+			###################音声データ###############################################################
+
+			#時刻の取得
+			audio_send_time = time.monotonic_ns()
+			
+			#送信時刻を8bytesデータに変換
+			audio_send_time_bytes = audio_send_time.to_bytes(8 , byteorder = "big")
+			
 			audio_group = audio_track.append_group()
-			audio_data = seq + bytes(PAYLOAD_SIZE - 4)
+			audio_data = seq +  audio_send_time_bytes + bytes(PAYLOAD_SIZE - 12) 
 			audio_group.write_frame(audio_data, timestamp_us=i*20000)
 			audio_group.finish()
 
-			#背景データ
+			###################背景データ############################################################
+			background_send_time = time.monotonic_ns()
+			background_send_time_bytes = background_send_time.to_bytes(8 ,byteorder = "big")
+
 			background_group =background_track.append_group()
-			background_data = seq + bytes(PAYLOAD_SIZE - 4)
+			background_data = seq + background_send_time_bytes + bytes(PAYLOAD_SIZE - 12)  
 			background_group.write_frame(background_data, timestamp_us=i*20000)
 			background_group.finish()
 
