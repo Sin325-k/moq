@@ -4,7 +4,8 @@ import time
 import csv #CSVファイルの保存に利用
 from datetime import datetime
 
-RELAY_URL="https://localhost:4443"
+#RELAY_URL="https://localhost:4443"
+RELAY_URL="https://10.200.1.1:4443"
 BROADCAST_NAME="experiment/audio-priority/minimal"
 
 
