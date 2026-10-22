@@ -26,6 +26,10 @@ async def receive_track(name,track,writer):
             #受信した時刻を取得
             receive_time = time.monotonic_ns()
 
+            #tbfログと時刻を合わせるためのやつ
+            receive_wall_time = time.time_ns()
+            
+
             count += 1
             #data = frame.payload.decode()
 
@@ -51,6 +55,7 @@ async def receive_track(name,track,writer):
                 len(frame.payload),
                 send_time,
                 receive_time,
+                receive_wall_time,
                 delay_ms
             ])
 
@@ -79,14 +84,22 @@ async def main() ->None:
             "size",
             "send_time_ns",
             "received_time_ns",
+            "received_wall_time_ns",
             "delay_ms"
         ])
 
         async with moq.Client(RELAY_URL, tls_verify=False) as client:
             broadcast = await client.announced_broadcast(BROADCAST_NAME)
             #track = await broadcast.subscribe_track(TRACK_NAME)
-            audio_track = await broadcast.subscribe_track(AUDIO_TRACK_NAME)
-            background_track = await broadcast.subscribe_track(BACKGROUND_TRACK_NAME)
+            audio_track = await broadcast.subscribe_track(
+                AUDIO_TRACK_NAME,
+                moq.Subscription(priority=255)
+            )
+
+            background_track = await broadcast.subscribe_track(
+                BACKGROUND_TRACK_NAME,
+                moq.Subscription(priority=0)
+                )
         
             await asyncio.gather(
                 receive_track("audio",audio_track,writer),

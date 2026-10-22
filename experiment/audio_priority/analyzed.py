@@ -1,7 +1,7 @@
 import csv
 import numpy as np
 
-CSV_FILE = "優先制御なしvm制限1.5Mbps6.csv"
+CSV_FILE = "優先制御ありvm制限1.5Mbps.csv"
 audio_delays = []
 background_delays = []
 
