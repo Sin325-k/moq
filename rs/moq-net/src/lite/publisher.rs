@@ -2009,6 +2009,9 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 		let emit_range = self.version.has_track_stream();
 		let mut start_sent = false;
 		let mut end_sent = false;
+		let background = self.track_name.as_ref() == "background";
+		let mut pending_background: Option<group::Consumer> = None;
+		let mut background_seen = 0;
 
 		// Serve datagrams off this same subscriber, but only on lite-05 over a datagram-capable
 		// transport (qmux/WebSocket/TCP/UDS report size 0). No group fallback: otherwise off.
@@ -2067,7 +2070,17 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 								}))
 								.await?;
 						}
-						self.queue_serve(group, &mut tasks);
+						if background {
+							pending_background = Some(group);
+							background_seen += 1;
+							if background_seen % 10 == 0
+								&& let Some(group) = pending_background.take()
+							{
+								self.queue_serve(group, &mut tasks);
+							}
+						} else {
+							self.queue_serve(group, &mut tasks);
+						}
 					}
 					Recv::Datagram(datagram) => self.serve_datagram(datagram),
 					Recv::Boundary(group) => {
@@ -2083,6 +2096,11 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 						// The live edge reached the boundary; SUBSCRIBE_END was already sent
 						// (or the version predates the track stream). Drain in-flight group
 						// tasks and FIN by returning.
+						if let Some(group) = pending_background.take()
+							&& !group.is_aborted()
+						{
+							self.queue_serve(group, &mut tasks);
+						}
 						while tasks.next().await.is_some() {}
 						return Ok(());
 					}
