@@ -1,0 +1,14 @@
+100
+100
+audio遅延の平均値は2.535ms
+background遅延の平均値は1599.081ms
+audio遅延の最大値は9.640ms
+audio遅延の最小値は1.679ms
+background遅延の最大値は2079.033ms
+background遅延の最小値は1126.108ms
+audio遅延の95%タイルは3.240ms
+background遅延の95%タイルは2021.777ms
+audio遅延の標準偏差は0.834ms
+background遅延の標準偏差は275.429ms
+audio遅延の中央値は2.398ms
+background遅延の中央値は1599.190ms

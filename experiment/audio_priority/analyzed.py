@@ -1,7 +1,8 @@
 import csv
 import numpy as np
+import sys
 
-CSV_FILE = "relay_bg10_1.5Mbps_run1.csv"
+CSV_FILE = sys.argv[1] if len(sys.argv) > 1 else "bg_parallel1_tbf1500k_run2.csv"
 audio_delays = []
 background_delays = []
 

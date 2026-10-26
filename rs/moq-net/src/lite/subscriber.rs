@@ -739,18 +739,25 @@ impl<S: web_transport_trait::Session> Subscriber<S> {
 			let mut serve = std::pin::pin!(self.run_group(stream, group.clone(), timescale));
 			kio::wait(|waiter| {
 				if let Poll::Ready(err) = track.poll_closed(waiter) {
+					tracing::debug!(group = %group.sequence, %err, "group receive track closed");
 					return Poll::Ready(Err(err));
 				}
 				if let Poll::Ready(err) = group.poll_closed(waiter) {
+					tracing::debug!(group = %group.sequence, %err, "group receive consumers closed");
 					return Poll::Ready(Err(err));
 				}
-				waiter.poll_future(serve.as_mut())
+				let res = waiter.poll_future(serve.as_mut());
+				if let Poll::Ready(Err(err)) = &res {
+					tracing::debug!(group = %group.sequence, %err, "group receive stream failed");
+				}
+				res
 			})
 			.await
 		};
 
 		match res {
 			Err(Error::Cancel) => {
+				tracing::debug!(group = %group.sequence, "group canceled");
 				let _ = group.abort(Error::Cancel);
 			}
 			Err(err) => {

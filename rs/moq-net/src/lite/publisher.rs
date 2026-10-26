@@ -1,7 +1,7 @@
 use crate::{announce, frame, group, origin, track};
 use std::{sync::Arc, task::Poll, time::Duration};
 
-use futures::{FutureExt, StreamExt, stream::FuturesUnordered};
+use futures::{StreamExt, stream::FuturesUnordered};
 use web_transport_trait::Stats;
 
 use crate::{
@@ -1982,6 +1982,28 @@ struct Subscription<S: web_transport_trait::Session> {
 	timescale: Option<crate::Timescale>,
 }
 
+struct ServeTrace {
+	track: Arc<str>,
+	sequence: u64,
+	started: bool,
+	completed: bool,
+}
+
+const BACKGROUND_MAX_IN_FLIGHT: usize = 2;
+
+impl Drop for ServeTrace {
+	fn drop(&mut self) {
+		if !self.completed {
+			tracing::debug!(
+				track = %self.track,
+				sequence = self.sequence,
+				started = self.started,
+				"serve group task dropped"
+			);
+		}
+	}
+}
+
 impl<S: web_transport_trait::Session> Subscription<S> {
 	async fn run_track(
 		mut self,
@@ -2009,9 +2031,10 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 		let emit_range = self.version.has_track_stream();
 		let mut start_sent = false;
 		let mut end_sent = false;
+
 		let background = self.track_name.as_ref() == "background";
-		let mut pending_background: Option<group::Consumer> = None;
-		let mut background_seen = 0;
+		let mut pending_background: Vec<group::Consumer> = Vec::new();
+		let mut pending_end_group: Option<u64> = None;
 
 		// Serve datagrams off this same subscriber, but only on lite-05 over a datagram-capable
 		// transport (qmux/WebSocket/TCP/UDS report size 0). No group fallback: otherwise off.
@@ -2026,7 +2049,7 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 
 		loop {
 			let event = {
-				let emit_boundary = emit_range && !end_sent;
+				let emit_boundary = emit_range && !end_sent && pending_end_group.is_none();
 				// SUBSCRIBE_UPDATE messages share this hot loop; safe because
 				// decode_maybe is cancel-safe given quinn/qmux's cancel-safe
 				// read primitives (see Reader::decode_maybe doc).
@@ -2071,37 +2094,56 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 								.await?;
 						}
 						if background {
-							pending_background = Some(group);
-							background_seen += 1;
-							if background_seen % 10 == 0
-								&& let Some(group) = pending_background.take()
-							{
-								self.queue_serve(group, &mut tasks);
-							}
+							pending_background.push(group);
+							let group = pending_background.last().expect("just pushed");
+							tracing::debug!(
+								sequence = group.sequence,
+								pending = pending_background.len(),
+								"background group stored"
+							);
 						} else {
 							self.queue_serve(group, &mut tasks);
 						}
 					}
 					Recv::Datagram(datagram) => self.serve_datagram(datagram),
 					Recv::Boundary(group) => {
-						// The track declared its exclusive final sequence. Forward it now,
-						// even if trailing groups (below `group`) are still in flight, then
-						// keep serving them until the live edge reaches the boundary.
-						end_sent = true;
-						writer
-							.encode(&lite::SubscribeResponse::End(lite::SubscribeEnd { group }))
-							.await?;
+						// The track declared its exclusive final sequence. Background defers
+						// it until its held groups finish; other tracks forward it now while
+						// trailing groups continue toward the boundary.
+						if background {
+							pending_end_group = Some(group);
+							tracing::debug!(group, pending = pending_background.len(), "background boundary");
+						} else {
+							end_sent = true;
+							writer
+								.encode(&lite::SubscribeResponse::End(lite::SubscribeEnd { group }))
+								.await?;
+						}
 					}
 					Recv::Finished => {
-						// The live edge reached the boundary; SUBSCRIBE_END was already sent
-						// (or the version predates the track stream). Drain in-flight group
-						// tasks and FIN by returning.
-						if let Some(group) = pending_background.take()
-							&& !group.is_aborted()
-						{
-							self.queue_serve(group, &mut tasks);
+						// Drain in-flight group tasks before FIN. Background groups are held
+						// until input finishes, and their deferred end follows their delivery.
+						tracing::debug!(pending = pending_background.len(), "background finished");
+						pending_background.sort_by_key(|group| group.sequence);
+						for group in pending_background {
+							tracing::debug!(
+								sequence = group.sequence,
+								aborted = group.is_aborted(),
+								"background release"
+							);
+							if !group.is_aborted() {
+								self.queue_serve(group, &mut tasks);
+								if tasks.len() >= BACKGROUND_MAX_IN_FLIGHT {
+									let _ = tasks.next().await;
+								}
+							}
 						}
 						while tasks.next().await.is_some() {}
+						if let Some(group) = pending_end_group {
+							writer
+								.encode(&lite::SubscribeResponse::End(lite::SubscribeEnd { group }))
+								.await?;
+						}
 						return Ok(());
 					}
 				},
@@ -2110,6 +2152,7 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 						// Peer FIN'd. They're done with this subscription. Drop any
 						// in-flight serve_group tasks (don't drain) so half-sent
 						// groups get cancelled rather than completed pointlessly.
+						tracing::debug!(track = %self.track_name, pending = pending_background.len(), "subscribe peer FIN");
 						return Ok(());
 					};
 					if let Ok(mut value) = track_priority_tx.write() {
@@ -2136,13 +2179,43 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 
 	fn queue_serve(&mut self, group: group::Consumer, tasks: &mut FuturesUnordered<MaybeSendBox<'static, ()>>) {
 		let sequence = group.sequence;
-		tracing::debug!(subscribe = self.id, track = %self.track_name, sequence, "serving group");
+		tracing::debug!(subscribe = self.id, track = %self.track_name, sequence, "queue serve entered");
 
 		// Use the latest priority for new groups so SUBSCRIBE_UPDATE applies to them too.
 		let current_priority = self.track_priority_current();
-		let handle = self.priority.insert(Priority::new(current_priority, sequence));
+		let priority_group = if self.track_name.as_ref() == "background" {
+			u64::MAX - sequence
+		} else {
+			sequence
+		};
+		let handle = self.priority.insert(Priority::new(current_priority, priority_group));
 		let fut = self.clone().serve_group(sequence, handle, group);
-		tasks.push(fut.map(|_| ()).maybe_boxed());
+		let mut trace = ServeTrace {
+			track: self.track_name.clone(),
+			sequence,
+			started: false,
+			completed: false,
+		};
+		tasks.push(
+			async move {
+				trace.started = true;
+				tracing::debug!(track = %trace.track, sequence, "serve group task poll/start");
+				let res = fut.await;
+				trace.completed = true;
+				if let Err(err) = res {
+					tracing::debug!(track = %trace.track, sequence, %err, "serve group failed");
+				}
+			}
+			.maybe_boxed(),
+		);
+		tracing::debug!(
+			subscribe = self.id,
+			track = %self.track_name,
+			sequence,
+			tasks = tasks.len(),
+			track_priority = current_priority,
+			"queue serve pushed and priority registered"
+		);
 	}
 
 	async fn serve_group(
@@ -2156,9 +2229,11 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 			sequence,
 		};
 		let stream = self.session.open_uni().await.map_err(Error::from_transport)?;
+		tracing::debug!(track = %self.track_name, sequence, "serve group start");
 		let mut stream = Writer::new(stream, self.version);
 
 		if let Err(err) = self.write_group(&mut stream, &msg, &mut priority, &mut group).await {
+			tracing::debug!(track = %self.track_name, sequence, %err, "serve group error");
 			// Reset with the real reason (Old, Lagged, Evicted, ...) so the subscriber can
 			// tell a truncated group from a routine cancel. Without this the Writer's Drop
 			// fallback reports every failure as Cancel.
@@ -2171,7 +2246,7 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 		// the finished stream with a spurious Cancel.
 		stream.close().await?;
 
-		tracing::debug!(sequence, "finished group");
+		tracing::debug!(track = %self.track_name, sequence, "serve group complete");
 
 		Ok(())
 	}
@@ -2185,7 +2260,9 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 		priority: &mut PriorityHandle,
 		group: &mut group::Consumer,
 	) -> Result<(), Error> {
-		stream.set_priority(priority.send_order());
+		let send_order = priority.send_order();
+		stream.set_priority(send_order);
+		tracing::debug!(track = %self.track_name, sequence = msg.sequence, send_order, "serve group priority applied");
 		stream.encode(&lite::DataType::Group).await?;
 		stream.encode(msg).await?;
 

@@ -15,7 +15,7 @@ PAYLOAD_SIZE  = 1945
 INTERVAL      = 0.020
 
 async def main() -> None:
-	#moq.log_level("debug")
+	moq.log_level("debug")
 	print(f"relayへ接続します: {RELAY_URL}")
 	async with moq.Client(RELAY_URL,tls_verify=False) as client:
 		
@@ -72,8 +72,9 @@ async def main() -> None:
 		#trackの終了
 		audio_track.finish()
 		background_track.finish()
+		await asyncio.sleep(1)
 
 		#broadcastの終了
-		broadcast.close() 
+		broadcast.close()
 
 asyncio.run(main())
