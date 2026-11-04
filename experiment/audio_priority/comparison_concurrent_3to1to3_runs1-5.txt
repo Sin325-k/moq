@@ -1,0 +1,46 @@
+## Five-run summary
+
+| Metric | R | A | B |
+|---|---:|---:|---:|
+| Audio overall mean | 1.954 ± 0.033 ms | 22.349 ± 0.283 ms | 3.415 ± 0.043 ms |
+| Audio overall p95 | 2.519 ± 0.091 ms | 96.231 ± 1.513 ms | 11.292 ± 0.191 ms |
+| Audio overall max | 6.951 ± 0.209 ms | 102.634 ± 0.967 ms | 12.459 ± 0.314 ms |
+| Audio 0-2s mean | 1.960 ± 0.093 ms | 2.347 ± 0.036 ms | 2.368 ± 0.033 ms |
+| Audio 0-2s p95 | 2.434 ± 0.094 ms | 3.011 ± 0.141 ms | 3.042 ± 0.081 ms |
+| Audio 0-2s max | 6.951 ± 0.209 ms | 9.638 ± 0.538 ms | 9.695 ± 0.190 ms |
+| Audio 2-4s mean | 1.995 ± 0.143 ms | 81.101 ± 1.287 ms | 2.113 ± 0.028 ms |
+| Audio 2-4s p95 | 2.572 ± 0.200 ms | 100.443 ± 0.658 ms | 2.631 ± 0.045 ms |
+| Audio 2-4s max | 2.829 ± 0.184 ms | 102.634 ± 0.967 ms | 3.118 ± 0.196 ms |
+| Audio 4s+ mean | 1.932 ± 0.062 ms | 4.110 ± 0.044 ms | 4.525 ± 0.067 ms |
+| Audio 4s+ p95 | 2.475 ± 0.094 ms | 11.634 ± 0.098 ms | 11.690 ± 0.063 ms |
+| Audio 4s+ max | 2.984 ± 0.195 ms | 21.553 ± 3.818 ms | 12.459 ± 0.314 ms |
+| Audio receive rate | 100.000 ± 0.000% | 100.000 ± 0.000% | 100.000 ± 0.000% |
+
+| Metric | A | B |
+|---|---:|---:|
+| Background receive rate | 100.000 ± 0.000% | 100.000 ± 0.000% |
+| Background completion | 8248.811 ± 5.538 ms | 8252.366 ± 4.876 ms |
+| Pending Groups at 4s | 69.600 ± 0.490 | 96.600 ± 0.490 |
+| Backlog drain after recovery | 911.600 ± 12.643 ms | 1165.600 ± 3.611 ms |
+| Relay 1 Mbps marker delay | 3.200 ± 1.720 ms | 1.400 ± 1.497 ms |
+| Relay 3 Mbps recovery marker delay | 1.200 ± 1.470 ms | 2.600 ± 1.744 ms |
+| Audio backlog-window mean | 10.471 ± 0.144 ms | 10.222 ± 0.181 ms |
+| Audio backlog-window p95 | 12.300 ± 0.197 ms | 12.240 ± 0.147 ms |
+| Audio backlog-window max | 21.553 ± 3.818 ms | 12.459 ± 0.314 ms |
+
+## Paired comparisons
+
+| Run | A low mean | B low mean | B-A mean | A low p95 | B low p95 | B-A p95 | B-R mean | B-R p95 | B-A Background completion |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 1 | 80.748 | 2.133 | -78.616 | 100.601 | 2.647 | -97.954 | +0.249 | +0.174 | +5.409 |
+| 2 | 82.254 | 2.140 | -80.115 | 100.967 | 2.675 | -98.292 | -0.061 | -0.195 | -4.905 |
+| 3 | 82.891 | 2.098 | -80.792 | 101.267 | 2.595 | -98.672 | -0.036 | -0.152 | +17.441 |
+| 4 | 80.171 | 2.065 | -78.106 | 99.850 | 2.563 | -97.287 | +0.198 | +0.173 | +0.619 |
+| 5 | 79.441 | 2.129 | -77.312 | 99.528 | 2.675 | -96.854 | +0.240 | +0.296 | -0.793 |
+
+Paired B-A low Audio mean difference: -78.988 ± 1.284 ms
+Paired B-A low Audio p95 difference: -97.812 ± 0.661 ms
+Paired B-A Background completion difference: 3.554 ± 7.686 ms
+A low-phase mean exceeded R in 5/5 paired runs.
+B improved low-phase mean over A in 5/5 paired runs.
+B improved low-phase p95 over A in 5/5 paired runs.

@@ -1,5 +1,11 @@
 use crate::{announce, frame, group, origin, track};
-use std::{sync::Arc, task::Poll, time::Duration};
+use std::{
+	collections::VecDeque,
+	path::{Path, PathBuf},
+	sync::Arc,
+	task::Poll,
+	time::{Duration, SystemTime, UNIX_EPOCH},
+};
 
 use futures::{StreamExt, stream::FuturesUnordered};
 use web_transport_trait::Stats;
@@ -1989,7 +1995,31 @@ struct ServeTrace {
 	completed: bool,
 }
 
-const BACKGROUND_MAX_IN_FLIGHT: usize = 2;
+const BACKGROUND_MAX_IN_FLIGHT: usize = 1;
+const BACKGROUND_MARKER_POLL_INTERVAL: Duration = Duration::from_millis(5);
+
+struct BackgroundPhaseMarker {
+	monotonic_ns: u64,
+	wall_time_ns: u64,
+}
+
+fn read_background_phase_marker(path: &Path) -> Option<BackgroundPhaseMarker> {
+	let contents = std::fs::read_to_string(path).ok()?;
+	let mut fields = contents.split_whitespace();
+	Some(BackgroundPhaseMarker {
+		monotonic_ns: fields.next()?.parse().ok()?,
+		wall_time_ns: fields.next()?.parse().ok()?,
+	})
+}
+
+fn wall_time_ns() -> u64 {
+	SystemTime::now()
+		.duration_since(UNIX_EPOCH)
+		.unwrap_or_default()
+		.as_nanos()
+		.try_into()
+		.unwrap_or(u64::MAX)
+}
 
 impl Drop for ServeTrace {
 	fn drop(&mut self) {
@@ -2033,8 +2063,23 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 		let mut end_sent = false;
 
 		let background = self.track_name.as_ref() == "background";
-		let mut pending_background: Vec<group::Consumer> = Vec::new();
+		let background_oracle =
+			background && std::env::var_os("MOQ_BACKGROUND_ORACLE").is_some_and(|value| value == "1");
+		let background_low_marker = background
+			.then(|| std::env::var_os("MOQ_BACKGROUND_LOW_MARKER").map(PathBuf::from))
+			.flatten();
+		let background_recovery_marker = background
+			.then(|| std::env::var_os("MOQ_BACKGROUND_RECOVERY_MARKER").map(PathBuf::from))
+			.flatten();
+		let mut pending_background: VecDeque<group::Consumer> = VecDeque::new();
 		let mut pending_end_group: Option<u64> = None;
+		let mut background_phase = 0;
+		let mut background_phase_timer: Option<MaybeSendBox<'static, ()>> = background_low_marker
+			.as_ref()
+			.map(|_| web_async::time::sleep(BACKGROUND_MARKER_POLL_INTERVAL).maybe_boxed());
+		let mut background_suppressed = false;
+		let mut background_recovered_at = None;
+		let mut background_backlog_drained = false;
 
 		// Serve datagrams off this same subscriber, but only on lite-05 over a datagram-capable
 		// transport (qmux/WebSocket/TCP/UDS report size 0). No group fallback: otherwise off.
@@ -2045,6 +2090,8 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 		enum Event {
 			Recv(Result<Recv, Error>),
 			Update(Result<Option<lite::SubscribeUpdate>, Error>),
+			Task,
+			BackgroundPhase,
 		}
 
 		loop {
@@ -2055,15 +2102,20 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 				// read primitives (see Reader::decode_maybe doc).
 				let mut update = std::pin::pin!(reader.decode_maybe::<lite::SubscribeUpdate>());
 				kio::wait(|waiter| {
-					// Drive in-flight group futures; completions just drop.
-					let mut cx = std::task::Context::from_waker(waiter.waker());
-					while let Poll::Ready(Some(())) = tasks.poll_next_unpin(&mut cx) {}
-
 					// Control first: SUBSCRIBE_UPDATE/FIN messages are rare, so they can't
 					// starve the data path, while a deep group backlog polled first could
 					// defer an unsubscribe or priority change indefinitely.
 					if let Poll::Ready(upd) = waiter.poll_future(update.as_mut()) {
 						return Poll::Ready(Event::Update(upd));
+					}
+					let mut cx = std::task::Context::from_waker(waiter.waker());
+					if !tasks.is_empty() && matches!(tasks.poll_next_unpin(&mut cx), Poll::Ready(Some(()))) {
+						return Poll::Ready(Event::Task);
+					}
+					if let Some(timer) = &mut background_phase_timer
+						&& waiter.poll_future(timer.as_mut()).is_ready()
+					{
+						return Poll::Ready(Event::BackgroundPhase);
 					}
 					// One cursor drives the whole subscription: poll the cap-aware arrival-order
 					// group and, when enabled, the next best-effort datagram. Groups are polled
@@ -2078,6 +2130,51 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 			};
 
 			match event {
+				Event::Task => {}
+				Event::BackgroundPhase => {
+					let marker = match background_phase {
+						0 => background_low_marker.as_deref().and_then(read_background_phase_marker),
+						1 => background_recovery_marker
+							.as_deref()
+							.and_then(read_background_phase_marker),
+						_ => None,
+					};
+					if let Some(marker) = marker {
+						let observed_wall_time_ns = wall_time_ns();
+						let observation_delay_ms =
+							observed_wall_time_ns.saturating_sub(marker.wall_time_ns) / 1_000_000;
+						if background_phase == 0 {
+							background_phase = 1;
+							background_suppressed = background_oracle;
+							tracing::info!(
+								pending = pending_background.len(),
+								in_flight = tasks.len(),
+								oracle = background_oracle,
+								tbf_applied_monotonic_ns = marker.monotonic_ns,
+								tbf_applied_wall_time_ns = marker.wall_time_ns,
+								observed_wall_time_ns,
+								observation_delay_ms,
+								"background one-mbps phase started"
+							);
+						} else {
+							background_phase = 2;
+							background_suppressed = false;
+							background_recovered_at = Some(web_async::time::Instant::now());
+							tracing::info!(
+								pending = pending_background.len(),
+								in_flight = tasks.len(),
+								oracle = background_oracle,
+								tbf_applied_monotonic_ns = marker.monotonic_ns,
+								tbf_applied_wall_time_ns = marker.wall_time_ns,
+								observed_wall_time_ns,
+								observation_delay_ms,
+								"background three-mbps recovery started"
+							);
+						}
+					}
+					background_phase_timer = (background_phase < 2)
+						.then(|| web_async::time::sleep(BACKGROUND_MARKER_POLL_INTERVAL).maybe_boxed());
+				}
 				Event::Recv(res) => match res? {
 					Recv::Group(group) => {
 						if emit_range && !start_sent {
@@ -2094,8 +2191,12 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 								.await?;
 						}
 						if background {
-							pending_background.push(group);
-							let group = pending_background.last().expect("just pushed");
+							let position = pending_background
+								.iter()
+								.position(|pending| pending.sequence > group.sequence)
+								.unwrap_or(pending_background.len());
+							pending_background.insert(position, group);
+							let group = &pending_background[position];
 							tracing::debug!(
 								sequence = group.sequence,
 								pending = pending_background.len(),
@@ -2121,24 +2222,14 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 						}
 					}
 					Recv::Finished => {
-						// Drain in-flight group tasks before FIN. Background groups are held
-						// until input finishes, and their deferred end follows their delivery.
+						// Drain pending and in-flight Background groups before its deferred end.
 						tracing::debug!(pending = pending_background.len(), "background finished");
-						pending_background.sort_by_key(|group| group.sequence);
-						for group in pending_background {
-							tracing::debug!(
-								sequence = group.sequence,
-								aborted = group.is_aborted(),
-								"background release"
-							);
-							if !group.is_aborted() {
-								self.queue_serve(group, &mut tasks);
-								if tasks.len() >= BACKGROUND_MAX_IN_FLIGHT {
-									let _ = tasks.next().await;
-								}
+						while !pending_background.is_empty() || !tasks.is_empty() {
+							self.queue_background(&mut pending_background, &mut tasks);
+							if !tasks.is_empty() {
+								let _ = tasks.next().await;
 							}
 						}
-						while tasks.next().await.is_some() {}
 						if let Some(group) = pending_end_group {
 							writer
 								.encode(&lite::SubscribeResponse::End(lite::SubscribeEnd { group }))
@@ -2173,6 +2264,41 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 					}
 					track.end_at(upd.end_group);
 				}
+			}
+
+			if background && !background_suppressed {
+				self.queue_background(&mut pending_background, &mut tasks);
+			}
+			if background_phase == 2 && !background_backlog_drained && pending_background.is_empty() && tasks.is_empty()
+			{
+				background_backlog_drained = true;
+				let recovery_ms = background_recovered_at.map_or(0, |at| at.elapsed().as_millis());
+				tracing::info!(
+					in_flight = tasks.len(),
+					recovery_ms,
+					"background recovery backlog drained"
+				);
+			}
+		}
+	}
+
+	fn queue_background(
+		&mut self,
+		pending: &mut VecDeque<group::Consumer>,
+		tasks: &mut FuturesUnordered<MaybeSendBox<'static, ()>>,
+	) {
+		while tasks.len() < BACKGROUND_MAX_IN_FLIGHT {
+			let Some(group) = pending.pop_front() else {
+				break;
+			};
+			tracing::debug!(
+				sequence = group.sequence,
+				aborted = group.is_aborted(),
+				pending = pending.len(),
+				"background release"
+			);
+			if !group.is_aborted() {
+				self.queue_serve(group, tasks);
 			}
 		}
 	}
