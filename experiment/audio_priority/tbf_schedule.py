@@ -17,8 +17,8 @@ def parse_args():
     parser.add_argument("--start-file", required=True, type=Path)
     parser.add_argument("--ready-file", required=True, type=Path)
     parser.add_argument("--stop-file", required=True, type=Path)
-    parser.add_argument("--low-marker-file", required=True, type=Path)
-    parser.add_argument("--recovery-marker-file", required=True, type=Path)
+    parser.add_argument("--low-marker-file", type=Path)
+    parser.add_argument("--recovery-marker-file", type=Path)
     return parser.parse_args()
 
 

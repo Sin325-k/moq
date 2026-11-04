@@ -5,7 +5,7 @@
 
 ## 現在の到達点
 
-R/A/Bの各5回本測定が完了した。
+R/A/Bの各5回本測定と、A条件でのQUIC stats calibration 5回測定が完了した。次は適応制御Cの設計・実装であり、Cはまだ実装していない。
 
 条件:
 
@@ -127,6 +127,25 @@ Audio終了後のBackground送信では、max in-flightを1から2、4へ増や�
 - すでに開始済みの1 Groupは完了させる
 - 3 Mbps復帰marker検出後、最古sequenceから再開
 - marker観測遅延、4秒時点pending、backlog解消時間をログへ記録
+- calibration時はRelay→Subscriber接続のQUIC statsを目標10 ms周期でCSVへ記録。TBF markerはRelayに渡さず、Background送信抑制もしない
+
+## QUIC stats calibration 5回測定結果
+
+既存A条件と同じAudio + Background concurrent、Background max in-flight=1、3→1→3 MbpsのTBF条件で、`pilot1`と`run2`～`run5`を完了した。個別CSVとログはローカルに保存し、Gitには5回集計結果`experiment/audio_priority/comparison_stats_calibration_runs1-5.txt`を保存する。実験条件、ログ形式、解析方法は`experiment/audio_priority/STATS_CALIBRATION.md`を参照。
+
+値は5回平均 ± run間の標本標準偏差。
+
+| 区間 | RTT median | RTT p95 |
+| --- | ---: | ---: |
+| 0～2秒、3 Mbps | 0.171 ± 0.012 ms | 0.244 ± 0.020 ms |
+| 2～4秒、1 Mbps | 83.924 ± 2.863 ms | 92.643 ± 0.902 ms |
+| 4秒以降、3 Mbps | 0.181 ± 0.008 ms | 7.966 ± 0.303 ms |
+
+各runの正常区間RTT medianをbaselineとした場合、`RTT > baseline +1 ms`が3 sample連続で成立するまでの時間は69.483 ± 9.911 ms（最小59.241、最大82.295 ms）。正常区間のfalse-positive episodeは0、raw false-positiveは0/1002だった。`+2 ms`の3 sample連続は89.357 ± 9.947 msで、こちらもfalse positiveは0だった。倍率閾値では正常区間のfalse positiveが発生した。
+
+bytes lostとpackets lostは5回とも増加しなかった。3 Mbps復帰後、RTTがbaseline +1 ms以下に戻るまで1107.241 ± 29.597 ms、+2 ms以下まで1045.119 ± 23.902 msかかった。
+
+現時点のNORMAL→CONGESTED判定候補は`RTT > baseline median +1 ms`の3 sample連続。5回の測定では`+2 ms`と同じく誤検出0で、検出は約20 ms早かった。まだ制御閾値としてコードに固定していない。estimated send rateは現在のweb-transport-quinnでcwndとRTTから計算されるため、独立した混雑証拠ではなく補助指標として扱う。
 
 ## 今回発生した解析問題と修正
 
@@ -161,26 +180,19 @@ completeとdropが同じsequenceに存在しても二重計上しない。CSV未
 - run validation: `experiment/audio_priority/analyze_concurrent.py`
 - 5 run集計: `experiment/audio_priority/aggregate_concurrent_runs.py`
 - 5 run集計結果: `experiment/audio_priority/comparison_concurrent_3to1to3_runs1-5.txt`
+- calibration 1 run実行: `experiment/audio_priority/run_stats_calibration_pilot.sh`
+- calibration 5 run実行とresume: `experiment/audio_priority/run_stats_calibration_measurements.sh`
+- calibration解析: `experiment/audio_priority/analyze_stats_calibration.py`
+- calibration集計: `experiment/audio_priority/aggregate_stats_calibration_runs.py`
+- calibration 5回集計結果: `experiment/audio_priority/comparison_stats_calibration_runs1-5.txt`
 
 ## 次回やること
 
-適応制御Cのコードはまだ実装していない。次回はコード変更前に以下を行う。
-
-1. 現在使用中のmoq-dev/moqと、実験Python環境が実際に使用している依存バージョンを確認
-2. Relayから取得可能なQUIC統計を調査
-3. RTTを確認
-4. estimated send rateを確認
-5. bytes / packets sentを確認
-6. bytes / packets lostを確認
-7. congestion windowを確認
-8. bytes in flightを確認
-9. その他利用可能な輻輳指標を整理
-
-その後、以下の状態機械による適応制御Cを設計する。
+適応制御Cのコードはまだ実装していない。次回は今回の検出候補と、3 Mbps復帰後もRTTが約1秒高く残る結果を踏まえ、以下の状態機械とBackground送信再開条件を設計する。
 
 `NORMAL -> CONGESTED -> RECOVERY -> NORMAL`
 
-RECOVERYではBackground backlogを一気に送信してAudioを再度悪化させない方法も検討する。Cをいきなり実装せず、まず利用可能なQUIC統計と状態遷移設計を整理する。
+RECOVERYではBackground backlogを一気に送信してAudioを再度悪化させない方法も検討する。TBFのrateやmarkerをRelayの制御入力に使わない。Cの実装と実通信実験は、このcalibration結果をGitへ保存した後の別作業とする。
 
 ## 環境上の重要事項
 

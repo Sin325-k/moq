@@ -1,6 +1,8 @@
 use crate::{announce, frame, group, origin, track};
 use std::{
 	collections::VecDeque,
+	fs::{File, OpenOptions},
+	io::{self, Write},
 	path::{Path, PathBuf},
 	sync::Arc,
 	task::Poll,
@@ -1162,6 +1164,7 @@ impl<S: web_transport_trait::Session> Publisher<S> {
 mod test {
 	use super::*;
 	use crate::{Timestamp, broadcast};
+	use futures::FutureExt;
 
 	fn track_producer(name: impl Into<Arc<str>>) -> track::Producer {
 		track::Producer::new(Arc::new(broadcast::Info::default()), name, None)
@@ -2003,6 +2006,74 @@ struct BackgroundPhaseMarker {
 	wall_time_ns: u64,
 }
 
+const STATS_CALIBRATION_INTERVAL: Duration = Duration::from_millis(10);
+
+struct StatsCalibrationLogger {
+	file: File,
+	started: web_async::time::Instant,
+	previous: [Option<u64>; 4],
+}
+
+impl StatsCalibrationLogger {
+	fn open(path: &Path) -> io::Result<Self> {
+		let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+		writeln!(
+			file,
+			"monotonic_ns,wall_time_ns,rtt_ns,estimated_send_rate_bps,inferred_cwnd_bytes,bytes_sent,bytes_sent_delta,packets_sent,packets_sent_delta,bytes_lost,bytes_lost_delta,packets_lost,packets_lost_delta,background_pending,background_in_flight"
+		)?;
+		Ok(Self {
+			file,
+			started: web_async::time::Instant::now(),
+			previous: [None; 4],
+		})
+	}
+
+	fn sample<S: web_transport_trait::Session>(
+		&mut self,
+		session: &S,
+		pending: usize,
+		in_flight: usize,
+	) -> io::Result<()> {
+		let monotonic_ns = self.started.elapsed().as_nanos();
+		let stats = session.stats();
+		let rtt_ns = stats.rtt().map(|value| value.as_nanos());
+		let send_rate = stats.estimated_send_rate();
+		// web-transport-quinn derives its send rate from cwnd and RTT. This reverses
+		// that estimate; it does not read the congestion window directly.
+		let inferred_cwnd = send_rate
+			.zip(rtt_ns)
+			.map(|(rate, rtt)| u128::from(rate) * rtt / 8_000_000_000);
+		let bytes_sent = stats.bytes_sent();
+		let packets_sent = stats.packets_sent();
+		let bytes_lost = stats.bytes_lost();
+		let packets_lost = stats.packets_lost();
+		let delta = |current: Option<u64>, index: usize| {
+			current
+				.zip(self.previous[index])
+				.and_then(|(current, previous)| current.checked_sub(previous))
+		};
+		let value = |number: Option<u128>| number.map_or_else(String::new, |number| number.to_string());
+		writeln!(
+			self.file,
+			"{monotonic_ns},{},{},{},{},{},{},{},{},{},{},{},{},{pending},{in_flight}",
+			wall_time_ns(),
+			value(rtt_ns),
+			value(send_rate.map(u128::from)),
+			value(inferred_cwnd),
+			value(bytes_sent.map(u128::from)),
+			value(delta(bytes_sent, 0).map(u128::from)),
+			value(packets_sent.map(u128::from)),
+			value(delta(packets_sent, 1).map(u128::from)),
+			value(bytes_lost.map(u128::from)),
+			value(delta(bytes_lost, 2).map(u128::from)),
+			value(packets_lost.map(u128::from)),
+			value(delta(packets_lost, 3).map(u128::from)),
+		)?;
+		self.previous = [bytes_sent, packets_sent, bytes_lost, packets_lost];
+		Ok(())
+	}
+}
+
 fn read_background_phase_marker(path: &Path) -> Option<BackgroundPhaseMarker> {
 	let contents = std::fs::read_to_string(path).ok()?;
 	let mut fields = contents.split_whitespace();
@@ -2063,6 +2134,22 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 		let mut end_sent = false;
 
 		let background = self.track_name.as_ref() == "background";
+		let mut stats_logger = if background {
+			std::env::var_os("MOQ_QUIC_STATS_CALIBRATION_CSV")
+				.map(|path| StatsCalibrationLogger::open(Path::new(&path)))
+				.transpose()
+				.map_err(|err| {
+					tracing::error!(%err, "failed to open QUIC stats calibration CSV");
+					Error::Transport(format!("QUIC stats calibration CSV: {err}"))
+				})?
+		} else {
+			None
+		};
+		let mut stats_interval = stats_logger.as_ref().map(|_| {
+			let mut interval = web_async::time::interval(STATS_CALIBRATION_INTERVAL);
+			interval.set_missed_tick_behavior(web_async::time::MissedTickBehavior::Skip);
+			interval
+		});
 		let background_oracle =
 			background && std::env::var_os("MOQ_BACKGROUND_ORACLE").is_some_and(|value| value == "1");
 		let background_low_marker = background
@@ -2092,6 +2179,7 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 			Update(Result<Option<lite::SubscribeUpdate>, Error>),
 			Task,
 			BackgroundPhase,
+			StatsSample,
 		}
 
 		loop {
@@ -2117,6 +2205,11 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 					{
 						return Poll::Ready(Event::BackgroundPhase);
 					}
+					if let Some(interval) = &mut stats_interval
+						&& interval.poll_tick(&mut cx).is_ready()
+					{
+						return Poll::Ready(Event::StatsSample);
+					}
 					// One cursor drives the whole subscription: poll the cap-aware arrival-order
 					// group and, when enabled, the next best-effort datagram. Groups are polled
 					// first so a datagram burst can't starve them; datagrams flow whenever no
@@ -2131,6 +2224,15 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 
 			match event {
 				Event::Task => {}
+				Event::StatsSample => {
+					if let Some(logger) = &mut stats_logger
+						&& let Err(err) = logger.sample(&self.session, pending_background.len(), tasks.len())
+					{
+						tracing::error!(%err, "failed to write QUIC stats calibration CSV");
+						stats_logger = None;
+						stats_interval = None;
+					}
+				}
 				Event::BackgroundPhase => {
 					let marker = match background_phase {
 						0 => background_low_marker.as_deref().and_then(read_background_phase_marker),
