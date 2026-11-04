@@ -1,0 +1,114 @@
+# Adaptive C RECOVERY, five-run comparison
+
+All runs were reanalyzed from raw artifacts. SD is the between-run sample standard deviation (n-1).
+
+## Detection
+
+| run | baseline ms | threshold ms | 1 Mbps applied wall ns | Background stop wall ns | detection ms | pending/in-flight at stop |
+| --- | --- | --- | --- | --- | --- | --- |
+| pilot1 | 0.178 | 1.178 | 1793782275793387630 | 1793782275869288396 | 75.901 | 1/1 |
+| run2 | 0.154 | 1.154 | 1793784001528750087 | 1793784001609947264 | 81.197 | 0/1 |
+| run3 | 0.198 | 1.198 | 1793784020707132420 | 1793784020765842251 | 58.710 | 0/1 |
+| run4 | 0.159 | 1.159 | 1793784039973730588 | 1793784040033415412 | 59.685 | 0/1 |
+| run5 | 0.164 | 1.164 | 1793784059235082884 | 1793784059316437599 | 81.355 | 0/1 |
+baseline RTT (ms): 0.171 ± 0.018 (min=0.154, max=0.198; n=5/5)
+threshold RTT (ms): 1.171 ± 0.018 (min=1.154, max=1.198; n=5/5)
+detection (ms): 71.369 ± 11.332 (min=58.710, max=81.355; n=5/5)
+stop pending: 0.200 ± 0.447 (min=0.000, max=1.000; n=5/5)
+stop in-flight: 1.000 ± 0.000 (min=1.000, max=1.000; n=5/5)
+
+## 1 Mbps RECOVERY
+
+| run | entries | probe start/complete | stage 1/2/3 completes | RTT max ms | RECOVERY to CONGESTED | false NORMAL | probe Audio mean/p95/max ms |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| pilot1 | 3 | 8/8 | 8/0/0 | 1.886 | 3 | 0 | 4.020/8.751/9.375 |
+| run2 | 3 | 8/8 | 8/0/0 | 2.852 | 3 | 0 | 4.678/12.083/14.143 |
+| run3 | 3 | 9/9 | 9/0/0 | 2.508 | 3 | 0 | 4.120/8.879/11.660 |
+| run4 | 3 | 8/8 | 8/0/0 | 1.706 | 3 | 0 | 3.800/8.109/9.503 |
+| run5 | 3 | 8/8 | 8/0/0 | 2.365 | 3 | 0 | 4.630/11.255/15.051 |
+RECOVERY entries: 3.000 ± 0.000 (min=3.000, max=3.000; n=5/5)
+probe starts: 8.200 ± 0.447 (min=8.000, max=9.000; n=5/5)
+probe completes: 8.200 ± 0.447 (min=8.000, max=9.000; n=5/5)
+stage 1 completes: 8.200 ± 0.447 (min=8.000, max=9.000; n=5/5)
+stage 2 completes: 0.000 ± 0.000 (min=0.000, max=0.000; n=5/5)
+stage 3 completes: 0.000 ± 0.000 (min=0.000, max=0.000; n=5/5)
+RECOVERY RTT max (ms): 2.264 ± 0.466 (min=1.706, max=2.852; n=5/5)
+RECOVERY to CONGESTED: 3.000 ± 0.000 (min=3.000, max=3.000; n=5/5)
+probe Audio mean (ms): 4.250 ± 0.387 (min=3.800, max=4.678; n=5/5)
+probe Audio p95 (ms): 9.815 ± 1.742 (min=8.109, max=12.083; n=5/5)
+probe Audio max (ms): 11.946 ± 2.604 (min=9.375, max=15.051; n=5/5)
+False NORMAL before 3 Mbps restoration: 5/5 runs had zero; total=0.
+Low-rate probe attempts returned to CONGESTED: 5/5 runs; per-run rebound counts above.
+
+## 3 Mbps restoration
+
+| run | switch to RECOVERY ms | stage progression | switch to NORMAL ms | NORMAL returned | state transitions | RECOVERY to CONGESTED total |
+| --- | --- | --- | --- | --- | --- | --- |
+| pilot1 | 72.978 | 1@72.978ms→2@383.269ms→3@692.863ms | 1002.987 | yes | 9 | 3 |
+| run2 | 125.907 | 1@125.907ms→2@435.419ms→3@736.035ms | 1076.172 | yes | 9 | 3 |
+| run3 | 122.518 | 1@122.518ms→2@432.244ms→3@732.778ms | 1052.202 | yes | 9 | 3 |
+| run4 | 73.870 | 1@73.870ms→2@403.876ms→3@744.199ms | 1064.014 | yes | 9 | 3 |
+| run5 | 128.352 | 1@128.352ms→2@437.976ms→3@747.757ms | 1057.468 | yes | 9 | 3 |
+switch to RECOVERY (ms): 104.725 ± 28.651 (min=72.978, max=128.352; n=5/5)
+switch to Stage 2 (ms): 418.557 ± 24.029 (min=383.269, max=437.976; n=5/5)
+switch to Stage 3 (ms): 730.727 ± 22.009 (min=692.863, max=747.757; n=5/5)
+switch to NORMAL (ms): 1050.569 ± 28.065 (min=1002.987, max=1076.172; n=5/5)
+state transitions: 9.000 ± 0.000 (min=9.000, max=9.000; n=5/5)
+RECOVERY to CONGESTED total: 3.000 ± 0.000 (min=3.000, max=3.000; n=5/5)
+A run already in RECOVERY at the restoration switch is reported as 0 ms for switch-to-RECOVERY.
+
+## Audio
+
+| run | 1 Mbps mean/p95/max ms | 1 Mbps samples | after restoration mean/p95/max ms | restored samples | received |
+| --- | --- | --- | --- | --- | --- |
+| pilot1 | 3.812/11.692/26.540 | 97 | 2.257/3.023/3.263 | 206 | 400/400 (100.0%) |
+| run2 | 4.310/15.713/28.913 | 96 | 2.242/2.877/3.361 | 206 | 400/400 (100.0%) |
+| run3 | 4.012/13.025/26.103 | 96 | 2.202/2.883/3.275 | 206 | 400/400 (100.0%) |
+| run4 | 4.230/14.562/30.008 | 96 | 2.217/2.915/3.354 | 206 | 400/400 (100.0%) |
+| run5 | 4.422/16.815/29.406 | 97 | 2.166/2.903/3.431 | 205 | 400/400 (100.0%) |
+1 Mbps Audio mean (ms): 4.157 ± 0.244 (min=3.812, max=4.422; n=5/5)
+1 Mbps Audio p95 (ms): 14.361 ± 2.049 (min=11.692, max=16.815; n=5/5)
+1 Mbps Audio max (ms): 28.194 ± 1.760 (min=26.103, max=30.008; n=5/5)
+after restoration Audio mean (ms): 2.217 ± 0.036 (min=2.166, max=2.257; n=5/5)
+after restoration Audio p95 (ms): 2.920 ± 0.060 (min=2.877, max=3.023; n=5/5)
+after restoration Audio max (ms): 3.337 ± 0.069 (min=3.263, max=3.431; n=5/5)
+Audio receive rate (%): 100.000 ± 0.000 (min=100.000, max=100.000; n=5/5)
+
+### 1 Mbps Audio comparison
+
+| condition | mean ms | p95 ms |
+| --- | --- | --- |
+| A no control | 81.101 | 100.443 |
+| Oracle B | 2.113 | 2.631 |
+| Minimal C | 3.425 ± 0.047 | 13.067 ± 0.218 |
+| Recovery C | 4.157 ± 0.244 | 14.361 ± 2.049 |
+A to Recovery C mean reduction: 94.87%.
+Recovery C minus Oracle B mean/p95: +2.044/+11.730 ms.
+Recovery C minus Minimal C mean/p95: +0.732/+1.294 ms.
+Recovery C / Minimal C mean/p95: 1.214x/1.099x.
+
+## Background
+
+| run | received | rate | completion ms from start | pending at restoration | backlog drain ms |
+| --- | --- | --- | --- | --- | --- |
+| pilot1 | 400/400 | 100.0% | 11540.550 | 86 | 7535.169 |
+| run2 | 400/400 | 100.0% | 11551.242 | 85 | 7547.799 |
+| run3 | 400/400 | 100.0% | 11710.569 | 85 | 7703.903 |
+| run4 | 400/400 | 100.0% | 11620.127 | 86 | 7615.590 |
+| run5 | 400/400 | 100.0% | 11730.267 | 86 | 7719.172 |
+completion from start (ms): 11630.551 ± 87.814 (min=11540.550, max=11730.267; n=5/5)
+pending at restoration: 85.600 ± 0.548 (min=85.000, max=86.000; n=5/5)
+backlog drain (ms): 7624.326 ± 85.455 (min=7535.169, max=7719.172; n=5/5)
+Background receive rate (%): 100.000 ± 0.000 (min=100.000, max=100.000; n=5/5)
+Background 400/400: 5/5 runs.
+
+## Validation
+
+| run | NORMAL to CONGESTED | false NORMAL=0 | NORMAL after restoration | Audio 400/400 | Background 400/400 | in-flight ≤1 | marker-free | reanalysis matches |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| pilot1 | OK | OK | OK | OK | OK | OK | OK | OK |
+| run2 | OK | OK | OK | OK | OK | OK | OK | OK |
+| run3 | OK | OK | OK | OK | OK | OK | OK | OK |
+| run4 | OK | OK | OK | OK | OK | OK | OK | OK |
+| run5 | OK | OK | OK | OK | OK | OK | OK | OK |
+Every row is validated against its QUIC CSV, TBF JSONL, subscriber CSV, Relay log, and saved analysis. TBF data is offline ground truth only.

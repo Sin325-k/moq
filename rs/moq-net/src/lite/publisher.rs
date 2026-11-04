@@ -2010,6 +2010,33 @@ const BACKGROUND_STATS_INTERVAL: Duration = Duration::from_millis(10);
 const ADAPTIVE_C_BASELINE_WINDOW: Duration = Duration::from_secs(1);
 const ADAPTIVE_C_RTT_INFLATION_NS: u64 = 1_000_000;
 const ADAPTIVE_C_HIGH_SAMPLES: u8 = 3;
+const ADAPTIVE_C_STABLE: Duration = Duration::from_millis(150);
+const ADAPTIVE_C_COOLDOWN: Duration = Duration::from_millis(300);
+const ADAPTIVE_C_STAGE: Duration = Duration::from_millis(300);
+const ADAPTIVE_C_INTERVALS: [Duration; 3] = [
+	Duration::from_millis(60),
+	Duration::from_millis(40),
+	Duration::from_millis(20),
+];
+const ADAPTIVE_C_MIN_PROBES: [usize; 3] = [5, 7, 14];
+
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+enum AdaptiveCState {
+	#[default]
+	Normal,
+	Congested,
+	Recovery(usize),
+}
+
+impl AdaptiveCState {
+	fn label(self) -> &'static str {
+		match self {
+			Self::Normal => "NORMAL",
+			Self::Congested => "CONGESTED",
+			Self::Recovery(_) => "RECOVERY",
+		}
+	}
+}
 
 #[derive(Default)]
 struct AdaptiveCDetector {
@@ -2017,7 +2044,15 @@ struct AdaptiveCDetector {
 	baseline_samples: Vec<u64>,
 	baseline_ns: Option<u64>,
 	consecutive_high: u8,
-	congested: bool,
+	state: AdaptiveCState,
+	stable_since: Option<web_async::time::Instant>,
+	stable_duration_ns: u128,
+	cooldown_until: Option<web_async::time::Instant>,
+	stage_started: Option<web_async::time::Instant>,
+	last_background_started: Option<web_async::time::Instant>,
+	stage_probe_count: usize,
+	recovery_enabled: bool,
+	was_congested: bool,
 }
 
 impl AdaptiveCDetector {
@@ -2025,19 +2060,22 @@ impl AdaptiveCDetector {
 		self.started.get_or_insert(now);
 	}
 
-	fn observe(&mut self, now: web_async::time::Instant, rtt_ns: Option<u64>) -> bool {
-		let Some(started) = self.started else {
-			return false;
-		};
-		if self.congested {
-			return false;
+	fn observe(
+		&mut self,
+		now: web_async::time::Instant,
+		rtt_ns: Option<u64>,
+		in_flight: usize,
+	) -> Option<&'static str> {
+		let started = self.started?;
+		if self.state == AdaptiveCState::Congested && !self.recovery_enabled {
+			return None;
 		}
 		if self.baseline_ns.is_none() {
 			if now.duration_since(started) < ADAPTIVE_C_BASELINE_WINDOW || self.baseline_samples.len() < 20 {
 				if let Some(rtt) = rtt_ns {
 					self.baseline_samples.push(rtt);
 				}
-				return false;
+				return None;
 			}
 			self.baseline_samples.sort_unstable();
 			let middle = self.baseline_samples.len() / 2;
@@ -2059,11 +2097,91 @@ impl AdaptiveCDetector {
 		} else {
 			0
 		};
-		if self.consecutive_high >= ADAPTIVE_C_HIGH_SAMPLES {
-			self.congested = true;
-			return true;
+		match self.state {
+			AdaptiveCState::Normal if self.consecutive_high >= ADAPTIVE_C_HIGH_SAMPLES => {
+				self.state = AdaptiveCState::Congested;
+				self.was_congested = true;
+				self.stable_since = None;
+				self.stable_duration_ns = 0;
+				Some("RTT above baseline +1 ms for 3 samples")
+			}
+			AdaptiveCState::Congested => {
+				if rtt_ns.is_some_and(|rtt| rtt <= threshold) {
+					let since = *self.stable_since.get_or_insert(now);
+					self.stable_duration_ns = now.duration_since(since).as_nanos();
+					if now.duration_since(since) >= ADAPTIVE_C_STABLE
+						&& self.cooldown_until.is_none_or(|until| now >= until)
+						&& in_flight == 0
+					{
+						self.state = AdaptiveCState::Recovery(0);
+						self.stage_started = Some(now);
+						self.last_background_started = None;
+						self.stage_probe_count = 0;
+						self.stable_since = None;
+						return Some("CONGESTED to RECOVERY: RTT stable for 150 ms and no Background in flight");
+					}
+				} else {
+					self.stable_since = None;
+					self.stable_duration_ns = 0;
+				}
+				None
+			}
+			AdaptiveCState::Recovery(_) if self.consecutive_high >= ADAPTIVE_C_HIGH_SAMPLES => {
+				self.state = AdaptiveCState::Congested;
+				self.cooldown_until = Some(now + ADAPTIVE_C_COOLDOWN);
+				self.stable_since = None;
+				self.stable_duration_ns = 0;
+				self.stage_started = None;
+				Some("RECOVERY to CONGESTED: RTT above baseline +1 ms for 3 samples")
+			}
+			AdaptiveCState::Recovery(stage)
+				if self
+					.stage_started
+					.is_some_and(|since| now.duration_since(since) >= ADAPTIVE_C_STAGE)
+					&& in_flight == 0
+					&& self.stage_probe_count >= ADAPTIVE_C_MIN_PROBES[stage] =>
+			{
+				if stage + 1 == ADAPTIVE_C_INTERVALS.len() {
+					self.state = AdaptiveCState::Normal;
+					self.stage_started = None;
+					Some("RECOVERY to NORMAL: all probe stages stable")
+				} else {
+					self.state = AdaptiveCState::Recovery(stage + 1);
+					self.stage_started = Some(now);
+					self.stage_probe_count = 0;
+					Some("RECOVERY stage advanced: RTT stable during probe")
+				}
+			}
+			_ => None,
 		}
-		false
+	}
+
+	fn can_start_background(&self, now: web_async::time::Instant) -> bool {
+		match self.state {
+			AdaptiveCState::Normal => {
+				!self.recovery_enabled
+					|| !self.was_congested
+					|| self
+						.last_background_started
+						.is_none_or(|last| now.duration_since(last) >= ADAPTIVE_C_INTERVALS[2])
+			}
+			AdaptiveCState::Congested => false,
+			AdaptiveCState::Recovery(stage) => self
+				.last_background_started
+				.is_none_or(|last| now.duration_since(last) >= ADAPTIVE_C_INTERVALS[stage]),
+		}
+	}
+
+	fn background_started(&mut self, now: web_async::time::Instant) {
+		if self.recovery_enabled {
+			self.last_background_started = Some(now);
+		}
+	}
+
+	fn background_completed(&mut self) {
+		if matches!(self.state, AdaptiveCState::Recovery(_)) {
+			self.stage_probe_count += 1;
+		}
 	}
 }
 
@@ -2078,21 +2196,154 @@ mod adaptive_c_tests {
 		detector.start(start);
 		for sample in 0..100 {
 			let rtt = if sample % 2 == 0 { 150_000 } else { 250_000 };
-			assert!(!detector.observe(start + Duration::from_millis(sample * 10), Some(rtt)));
+			assert!(
+				detector
+					.observe(start + Duration::from_millis(sample * 10), Some(rtt), 0)
+					.is_none()
+			);
 		}
-		assert!(!detector.observe(start + Duration::from_secs(1), Some(1_200_000)));
+		assert!(
+			detector
+				.observe(start + Duration::from_secs(1), Some(1_200_000), 0)
+				.is_none()
+		);
 		assert_eq!(detector.baseline_ns, Some(200_000));
 		assert_eq!(detector.consecutive_high, 0);
 		for sample in 101..103 {
-			assert!(!detector.observe(start + Duration::from_millis(sample * 10), Some(1_200_001)));
+			assert!(
+				detector
+					.observe(start + Duration::from_millis(sample * 10), Some(1_200_001), 0)
+					.is_none()
+			);
 		}
-		assert!(!detector.observe(start + Duration::from_millis(1030), None));
+		assert!(detector.observe(start + Duration::from_millis(1030), None, 0).is_none());
 		for sample in 104..106 {
-			assert!(!detector.observe(start + Duration::from_millis(sample * 10), Some(1_200_001)));
+			assert!(
+				detector
+					.observe(start + Duration::from_millis(sample * 10), Some(1_200_001), 0)
+					.is_none()
+			);
 		}
-		assert!(detector.observe(start + Duration::from_millis(1060), Some(1_200_001)));
-		assert!(detector.congested);
-		assert!(!detector.observe(start + Duration::from_millis(1070), Some(1_200_001)));
+		assert!(
+			detector
+				.observe(start + Duration::from_millis(1060), Some(1_200_001), 0)
+				.is_some()
+		);
+		assert_eq!(detector.state, AdaptiveCState::Congested);
+		assert!(
+			detector
+				.observe(start + Duration::from_millis(1070), Some(1_200_001), 0)
+				.is_none()
+		);
+	}
+
+	#[test]
+	fn recovery_requires_quiet_rtt_probe_load_and_cooldown() {
+		let start = web_async::time::Instant::now();
+		let mut detector = AdaptiveCDetector {
+			started: Some(start),
+			baseline_ns: Some(200_000),
+			recovery_enabled: true,
+			..Default::default()
+		};
+		for ms in [10, 20, 30] {
+			let event = detector.observe(start + Duration::from_millis(ms), Some(1_300_000), 1);
+			assert_eq!(event.is_some(), ms == 30);
+		}
+		assert_eq!(detector.state, AdaptiveCState::Congested);
+		assert!(
+			detector
+				.observe(start + Duration::from_millis(40), Some(200_000), 1)
+				.is_none()
+		);
+		assert!(
+			detector
+				.observe(start + Duration::from_millis(190), Some(200_000), 1)
+				.is_none()
+		);
+		assert!(
+			detector
+				.observe(start + Duration::from_millis(200), Some(200_000), 0)
+				.is_some()
+		);
+		assert_eq!(detector.state, AdaptiveCState::Recovery(0));
+		assert_eq!(detector.stable_duration_ns, 160_000_000);
+		assert!(detector.can_start_background(start + Duration::from_millis(200)));
+		detector.background_started(start + Duration::from_millis(200));
+		detector.background_completed();
+		assert!(!detector.can_start_background(start + Duration::from_millis(259)));
+		for ms in [260, 320, 380, 440] {
+			assert!(detector.can_start_background(start + Duration::from_millis(ms)));
+			detector.background_started(start + Duration::from_millis(ms));
+			detector.background_completed();
+		}
+		assert!(
+			detector
+				.observe(start + Duration::from_millis(500), Some(200_000), 0)
+				.is_some()
+		);
+		assert_eq!(detector.state, AdaptiveCState::Recovery(1));
+		for ms in [510, 520, 530] {
+			let event = detector.observe(start + Duration::from_millis(ms), Some(1_300_000), 0);
+			assert_eq!(event.is_some(), ms == 530);
+		}
+		assert_eq!(detector.state, AdaptiveCState::Congested);
+		assert!(
+			detector
+				.observe(start + Duration::from_millis(540), Some(200_000), 0)
+				.is_none()
+		);
+		assert!(
+			detector
+				.observe(start + Duration::from_millis(690), Some(200_000), 0)
+				.is_none()
+		);
+		assert!(
+			detector
+				.observe(start + Duration::from_millis(830), Some(200_000), 0)
+				.is_some()
+		);
+		assert_eq!(detector.state, AdaptiveCState::Recovery(0));
+		assert!(
+			detector
+				.observe(start + Duration::from_millis(2000), Some(200_000), 0)
+				.is_none()
+		);
+		assert_eq!(detector.state, AdaptiveCState::Recovery(0));
+	}
+
+	#[test]
+	fn normal_requires_all_three_stages_with_probe_counts() {
+		let start = web_async::time::Instant::now();
+		let mut detector = AdaptiveCDetector {
+			started: Some(start),
+			baseline_ns: Some(200_000),
+			recovery_enabled: true,
+			state: AdaptiveCState::Recovery(0),
+			stage_started: Some(start),
+			..Default::default()
+		};
+		let mut stage_start = start;
+		for (stage, min_probes) in ADAPTIVE_C_MIN_PROBES.iter().enumerate() {
+			assert_eq!(detector.state, AdaptiveCState::Recovery(stage));
+			assert!(
+				detector
+					.observe(stage_start + ADAPTIVE_C_STAGE, Some(200_000), 0)
+					.is_none()
+			);
+			for _ in 0..*min_probes {
+				detector.background_started(stage_start);
+				detector.background_completed();
+			}
+			let next = stage_start + ADAPTIVE_C_STAGE + Duration::from_millis(10);
+			assert!(detector.observe(next, Some(200_000), 0).is_some());
+			stage_start = next;
+		}
+		assert_eq!(detector.state, AdaptiveCState::Normal);
+		detector.was_congested = true;
+		detector.background_started(stage_start);
+		assert!(!detector.can_start_background(stage_start + Duration::from_millis(19)));
+		assert!(detector.can_start_background(stage_start + Duration::from_millis(20)));
 	}
 }
 
@@ -2104,19 +2355,34 @@ struct AdaptiveCMonitor {
 	detector: AdaptiveCDetector,
 }
 
+struct AdaptiveCLogRow<'a> {
+	now: web_async::time::Instant,
+	wall_ns: u64,
+	rtt_ns: Option<u64>,
+	pending: usize,
+	in_flight: usize,
+	reason: &'a str,
+	event: &'a str,
+	sequence: Option<u64>,
+}
+
 impl AdaptiveCMonitor {
-	fn open(path: &Path) -> io::Result<Self> {
+	fn open(path: &Path, recovery_enabled: bool) -> io::Result<Self> {
 		let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
 		writeln!(
 			file,
-			"monotonic_ns,wall_time_ns,rtt_ns,baseline_rtt_ns,threshold_rtt_ns,consecutive_high,state,background_pending,background_in_flight,baseline_started_wall_time_ns,transition_wall_time_ns,transition_reason"
+			"monotonic_ns,wall_time_ns,rtt_ns,baseline_rtt_ns,threshold_rtt_ns,consecutive_high,state,background_pending,background_in_flight,baseline_started_wall_time_ns,transition_wall_time_ns,transition_reason,stable_duration_ns,recovery_stage,background_start_interval_ms,event,group_sequence"
 		)?;
+		let detector = AdaptiveCDetector {
+			recovery_enabled,
+			..Default::default()
+		};
 		Ok(Self {
 			file,
 			opened: web_async::time::Instant::now(),
 			baseline_started_wall_ns: None,
 			transition_wall_ns: None,
-			detector: AdaptiveCDetector::default(),
+			detector,
 		})
 	}
 
@@ -2132,48 +2398,116 @@ impl AdaptiveCMonitor {
 		session: &S,
 		pending: usize,
 		in_flight: usize,
-	) -> io::Result<bool> {
+	) -> io::Result<()> {
 		let now = web_async::time::Instant::now();
 		let wall_ns = wall_time_ns();
 		let rtt_ns = session
 			.stats()
 			.rtt()
 			.map(|rtt| rtt.as_nanos().try_into().unwrap_or(u64::MAX));
-		let transitioned = self.detector.observe(now, rtt_ns);
-		if transitioned {
+		let transition = self.detector.observe(now, rtt_ns, in_flight);
+		if let Some(reason) = transition {
 			self.transition_wall_ns = Some(wall_ns);
-			tracing::info!(
-				wall_time_ns = wall_ns,
-				rtt_ns,
-				baseline_rtt_ns = self.detector.baseline_ns,
-				consecutive_high = self.detector.consecutive_high,
-				pending,
-				in_flight,
-				"adaptive C NORMAL to CONGESTED: RTT above baseline +1 ms for 3 samples"
-			);
+			if reason == "RTT above baseline +1 ms for 3 samples" {
+				tracing::info!(
+					wall_time_ns = wall_ns,
+					rtt_ns,
+					baseline_rtt_ns = self.detector.baseline_ns,
+					consecutive_high = self.detector.consecutive_high,
+					pending,
+					in_flight,
+					"adaptive C NORMAL to CONGESTED: RTT above baseline +1 ms for 3 samples"
+				);
+			} else {
+				tracing::info!(wall_time_ns = wall_ns, rtt_ns, baseline_rtt_ns = self.detector.baseline_ns,
+					consecutive_high = self.detector.consecutive_high, pending, in_flight,
+					state = self.detector.state.label(), %reason, "adaptive C state transition");
+			}
 		}
+		self.write_row(AdaptiveCLogRow {
+			now,
+			wall_ns,
+			rtt_ns,
+			pending,
+			in_flight,
+			reason: transition.unwrap_or(""),
+			event: "SAMPLE",
+			sequence: None,
+		})
+	}
+
+	fn background_event(
+		&mut self,
+		event: &'static str,
+		sequence: u64,
+		pending: usize,
+		in_flight: usize,
+	) -> io::Result<()> {
+		let now = web_async::time::Instant::now();
+		if event == "GROUP_START" {
+			self.detector.background_started(now);
+		} else if event == "GROUP_COMPLETE" {
+			self.detector.background_completed();
+		}
+		self.write_row(AdaptiveCLogRow {
+			now,
+			wall_ns: wall_time_ns(),
+			rtt_ns: None,
+			pending,
+			in_flight,
+			reason: "",
+			event,
+			sequence: Some(sequence),
+		})
+	}
+
+	fn write_row(&mut self, row: AdaptiveCLogRow<'_>) -> io::Result<()> {
+		let AdaptiveCLogRow {
+			now,
+			wall_ns,
+			rtt_ns,
+			pending,
+			in_flight,
+			reason,
+			event,
+			sequence,
+		} = row;
 		let value = |number: Option<u64>| number.map_or_else(String::new, |number| number.to_string());
 		let baseline = self.detector.baseline_ns;
 		let threshold = baseline.map(|value| value.saturating_add(ADAPTIVE_C_RTT_INFLATION_NS));
-		let reason = if transitioned {
-			"RTT above baseline +1 ms for 3 samples"
-		} else {
-			""
+		let stable_duration_ns =
+			if self.detector.state == AdaptiveCState::Congested || reason.starts_with("CONGESTED to RECOVERY") {
+				self.detector.stable_duration_ns
+			} else {
+				0
+			};
+		let stage = match self.detector.state {
+			AdaptiveCState::Recovery(stage) => Some(stage + 1),
+			_ => None,
+		};
+		let interval = match self.detector.state {
+			AdaptiveCState::Recovery(stage) => Some(ADAPTIVE_C_INTERVALS[stage].as_millis()),
+			AdaptiveCState::Normal if self.detector.recovery_enabled && self.detector.was_congested => Some(20),
+			_ => None,
 		};
 		writeln!(
 			self.file,
-			"{},{wall_ns},{},{},{},{},{},{pending},{in_flight},{},{},{}",
+			"{},{wall_ns},{},{},{},{},{},{pending},{in_flight},{},{},{},{},{},{},{event},{}",
 			now.duration_since(self.opened).as_nanos(),
 			value(rtt_ns),
 			value(baseline),
 			value(threshold),
 			self.detector.consecutive_high,
-			if self.detector.congested { "CONGESTED" } else { "NORMAL" },
+			self.detector.state.label(),
 			value(self.baseline_started_wall_ns),
 			value(self.transition_wall_ns),
 			reason,
+			stable_duration_ns,
+			stage.map_or_else(String::new, |stage| stage.to_string()),
+			interval.map_or_else(String::new, |interval| interval.to_string()),
+			value(sequence),
 		)?;
-		Ok(transitioned)
+		Ok(())
 	}
 }
 
@@ -2284,7 +2618,7 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 		writer: &mut Writer<S::SendStream, Version>,
 		track_priority_tx: &kio::Producer<u8>,
 	) -> Result<(), Error> {
-		let mut tasks: FuturesUnordered<MaybeSendBox<'static, ()>> = FuturesUnordered::new();
+		let mut tasks: FuturesUnordered<MaybeSendBox<'static, (u64, bool)>> = FuturesUnordered::new();
 
 		// Start the consumer at the specified sequence, otherwise start at the latest group.
 		if let Some(start_group) = start_group.or_else(|| track.latest()) {
@@ -2304,11 +2638,13 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 
 		let background = self.track_name.as_ref() == "background";
 		let adaptive_c = background && std::env::var_os("MOQ_BACKGROUND_ADAPTIVE_C").is_some_and(|value| value == "1");
+		let recovery_enabled =
+			adaptive_c && std::env::var_os("MOQ_BACKGROUND_ADAPTIVE_C_RECOVERY").is_some_and(|value| value == "1");
 		let mut adaptive_monitor = if adaptive_c {
 			let path = std::env::var_os("MOQ_BACKGROUND_ADAPTIVE_C_LOG_CSV")
 				.ok_or_else(|| Error::Transport("missing MOQ_BACKGROUND_ADAPTIVE_C_LOG_CSV".to_owned()))?;
 			Some(
-				AdaptiveCMonitor::open(Path::new(&path))
+				AdaptiveCMonitor::open(Path::new(&path), recovery_enabled)
 					.map_err(|err| Error::Transport(format!("adaptive C CSV: {err}")))?,
 			)
 		} else {
@@ -2358,7 +2694,7 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 		enum Event {
 			Recv(Result<Recv, Error>),
 			Update(Result<Option<lite::SubscribeUpdate>, Error>),
-			Task,
+			Task(u64, bool),
 			BackgroundPhase,
 			StatsSample,
 		}
@@ -2378,8 +2714,8 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 						return Poll::Ready(Event::Update(upd));
 					}
 					let mut cx = std::task::Context::from_waker(waiter.waker());
-					if !tasks.is_empty() && matches!(tasks.poll_next_unpin(&mut cx), Poll::Ready(Some(()))) {
-						return Poll::Ready(Event::Task);
+					if let Poll::Ready(Some((sequence, completed))) = tasks.poll_next_unpin(&mut cx) {
+						return Poll::Ready(Event::Task(sequence, completed));
 					}
 					if let Some(timer) = &mut background_phase_timer
 						&& waiter.poll_future(timer.as_mut()).is_ready()
@@ -2406,12 +2742,24 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 			};
 
 			match event {
-				Event::Task => {}
+				Event::Task(sequence, completed) => {
+					if let Some(monitor) = &mut adaptive_monitor {
+						monitor
+							.background_event(
+								if completed { "GROUP_COMPLETE" } else { "GROUP_FAILED" },
+								sequence,
+								pending_background.len(),
+								tasks.len(),
+							)
+							.map_err(|err| Error::Transport(format!("adaptive C CSV: {err}")))?;
+					}
+				}
 				Event::StatsSample => {
 					if let Some(monitor) = &mut adaptive_monitor {
-						background_suppressed |= monitor
+						monitor
 							.sample(&self.session, pending_background.len(), tasks.len())
 							.map_err(|err| Error::Transport(format!("adaptive C CSV: {err}")))?;
+						background_suppressed = monitor.detector.state == AdaptiveCState::Congested;
 					}
 					if let Some(logger) = &mut stats_logger
 						&& let Err(err) = logger.sample(&self.session, pending_background.len(), tasks.len())
@@ -2518,19 +2866,19 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 						}
 					}
 					Recv::Finished => {
-						if adaptive_c && background_suppressed {
-							// Keep pending Groups and the subscription alive until the peer cancels.
+						if adaptive_c {
+							// The timer and pending queue continue after the publisher finishes.
 							source_finished = true;
 							tracing::info!(
 								pending = pending_background.len(),
-								"adaptive C background held at producer finish"
+								"adaptive C background source finished"
 							);
 							continue;
 						}
 						// Drain pending and in-flight Background groups before its deferred end.
 						tracing::debug!(pending = pending_background.len(), "background finished");
 						while !pending_background.is_empty() || !tasks.is_empty() {
-							self.queue_background(&mut pending_background, &mut tasks);
+							let _ = self.queue_background(&mut pending_background, &mut tasks);
 							if !tasks.is_empty() {
 								let _ = tasks.next().await;
 							}
@@ -2571,8 +2919,26 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 				}
 			}
 
-			if background && !background_suppressed {
-				self.queue_background(&mut pending_background, &mut tasks);
+			if let Some(monitor) = &mut adaptive_monitor {
+				if !pending_background.is_empty()
+					&& tasks.is_empty()
+					&& monitor.detector.can_start_background(web_async::time::Instant::now())
+					&& let Some(sequence) = self.queue_background(&mut pending_background, &mut tasks)
+				{
+					monitor
+						.background_event("GROUP_START", sequence, pending_background.len(), tasks.len())
+						.map_err(|err| Error::Transport(format!("adaptive C CSV: {err}")))?;
+				}
+			} else if background && !background_suppressed {
+				let _ = self.queue_background(&mut pending_background, &mut tasks);
+			}
+			if source_finished && pending_background.is_empty() && tasks.is_empty() {
+				if let Some(group) = pending_end_group {
+					writer
+						.encode(&lite::SubscribeResponse::End(lite::SubscribeEnd { group }))
+						.await?;
+				}
+				return Ok(());
 			}
 			if background_phase == 2 && !background_backlog_drained && pending_background.is_empty() && tasks.is_empty()
 			{
@@ -2590,8 +2956,9 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 	fn queue_background(
 		&mut self,
 		pending: &mut VecDeque<group::Consumer>,
-		tasks: &mut FuturesUnordered<MaybeSendBox<'static, ()>>,
-	) {
+		tasks: &mut FuturesUnordered<MaybeSendBox<'static, (u64, bool)>>,
+	) -> Option<u64> {
+		let mut started = None;
 		while tasks.len() < BACKGROUND_MAX_IN_FLIGHT {
 			let Some(group) = pending.pop_front() else {
 				break;
@@ -2603,12 +2970,18 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 				"background release"
 			);
 			if !group.is_aborted() {
+				started = Some(group.sequence);
 				self.queue_serve(group, tasks);
 			}
 		}
+		started
 	}
 
-	fn queue_serve(&mut self, group: group::Consumer, tasks: &mut FuturesUnordered<MaybeSendBox<'static, ()>>) {
+	fn queue_serve(
+		&mut self,
+		group: group::Consumer,
+		tasks: &mut FuturesUnordered<MaybeSendBox<'static, (u64, bool)>>,
+	) {
 		let sequence = group.sequence;
 		tracing::debug!(subscribe = self.id, track = %self.track_name, sequence, "queue serve entered");
 
@@ -2633,9 +3006,11 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 				tracing::debug!(track = %trace.track, sequence, "serve group task poll/start");
 				let res = fut.await;
 				trace.completed = true;
+				let completed = res.is_ok();
 				if let Err(err) = res {
 					tracing::debug!(track = %trace.track, sequence, %err, "serve group failed");
 				}
+				(sequence, completed)
 			}
 			.maybe_boxed(),
 		);

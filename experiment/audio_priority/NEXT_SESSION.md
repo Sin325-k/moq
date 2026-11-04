@@ -5,7 +5,7 @@
 
 ## 現在の到達点
 
-R/A/Bの各5回本測定、A条件でのQUIC stats calibration 5回測定、Minimal adaptive Cの5回測定が完了した。次はRECOVERY制御の設計。Minimal Cは混雑検出後にBackgroundを停止したままとし、RECOVERYはまだ実装していない。
+R/A/Bの各5回本測定、A条件でのQUIC stats calibration 5回測定、Minimal adaptive Cの5回測定に加え、Adaptive C RECOVERYの固定3→1→3 Mbps条件での5-run再現性確認が完了した。次は異なるボトルネック帯域0.8 Mbps / 1.2 Mbpsで頑健性を評価する。現時点の再現性の結論は固定3→1→3 Mbps条件に限る。
 
 条件:
 
@@ -128,6 +128,19 @@ Audio終了後のBackground送信では、max in-flightを1から2、4へ増や�
 - 3 Mbps復帰marker検出後、最古sequenceから再開
 - marker観測遅延、4秒時点pending、backlog解消時間をログへ記録
 - calibration時はRelay→Subscriber接続のQUIC statsを目標10 ms周期でCSVへ記録。TBF markerはRelayに渡さず、Background送信抑制もしない
+- RECOVERY CではRTTがbaseline +1 msを3 sample連続して超えるとBackgroundの新規開始を停止する。150 msのRTT安定後に60→40→20 msのcontrolled probeを行い、各stageを最低300 ms維持する。probe失敗後は300 ms cooldownを設ける。TBF markerは判定に使わない
+
+## Adaptive C RECOVERY 5-run再現性
+
+固定3→1→3 Mbps条件の`pilot1`と`run2`～`run5`を完了した。rawのQUIC CSV、TBF JSONL、Subscriber CSV、Relayログから再計算し、各runの保存済みanalysisと5回集計`experiment/audio_priority/comparison_adaptive_c_recovery_runs1-5.txt`に完全一致した。条件と手順は`experiment/audio_priority/ADAPTIVE_C_RECOVERY.md`を参照。値は5回平均 ± run間の標本標準偏差。
+
+- NORMAL→CONGESTED検出: 5/5回、1 Mbps切替から71.369 ± 11.332 ms（最小58.710、最大81.355 ms）
+- 1 Mbps中: 各runでRECOVERYに3回入り、probe後に3回CONGESTEDへ戻った。3 Mbps復帰前のfalse NORMALは全runで0
+- 3 Mbps復帰後: 全runでRECOVERY Stage 1→2→3→NORMAL。NORMAL復帰まで1050.569 ± 28.065 ms
+- 1 Mbps Audio mean: 4.157 ± 0.244 ms、p95: 14.361 ± 2.049 ms。Audio受信は5/5回で400/400
+- Background受信: 5/5回で400/400。3 Mbps復帰後のbacklog解消は7624.326 ± 85.455 ms
+
+全runの状態遷移は`NORMAL→CONGESTED→(RECOVERY Stage 1→CONGESTED)×3→RECOVERY Stage 1→Stage 2→Stage 3→NORMAL`だった。固定した実験条件では状態遷移、Audio保護、Background回復の再現性を確認した。他の帯域条件や実ネットワークでの再現性は未評価。
 
 ## QUIC stats calibration 5回測定結果
 
@@ -206,14 +219,20 @@ completeとdropが同じsequenceに存在しても二重計上しない。CSV未
 - Minimal Cのrun validation: `experiment/audio_priority/analyze_adaptive_c.py`
 - Minimal Cの5 run集計: `experiment/audio_priority/aggregate_adaptive_c_runs.py`
 - Minimal Cの5回集計結果: `experiment/audio_priority/comparison_adaptive_c_runs1-5.txt`
+- RECOVERY Cの条件と手順: `experiment/audio_priority/ADAPTIVE_C_RECOVERY.md`
+- RECOVERY Cの1 run実行: `experiment/audio_priority/run_adaptive_c_recovery_pilot.sh`
+- RECOVERY Cの5 run実行とresume: `experiment/audio_priority/run_adaptive_c_recovery_measurements.sh`
+- RECOVERY Cの解析: `experiment/audio_priority/analyze_adaptive_c_recovery.py`
+- RECOVERY Cの5 run集計: `experiment/audio_priority/aggregate_adaptive_c_recovery_runs.py`
+- RECOVERY Cの5回集計結果: `experiment/audio_priority/comparison_adaptive_c_recovery_runs1-5.txt`
 
 ## 次回やること
 
-Minimal CはNORMAL→CONGESTEDまで実装済み。次回はRECOVERYの状態遷移とcontrolled Background probeを設計・検証する。
+固定3→1→3 Mbps条件でRECOVERY Cの5-run再現性は確認済み。次は同じ制御条件を変更せず、異なるボトルネック帯域0.8 Mbps / 1.2 Mbpsで頑健性を評価する。既存のrun成果物は上書きしない。
 
 `NORMAL -> CONGESTED -> RECOVERY -> NORMAL`
 
-Background停止後はAudio-only負荷が約0.78 Mbpsとなり、回線が1 MbpsのままでもRTTが低下し得る。RTTがbaseline付近へ戻っただけでは3 Mbps復帰と判定しない。RECOVERYでは限定的なBackground probeで容量を確かめ、backlogを一気に流さずAudioを保護する。TBFのrateやmarkerをRelayの制御入力に使わない。
+Background停止後はAudio-only負荷が約0.78 Mbpsとなり、回線が1 MbpsのままでもRTTが低下し得る。RTTがbaseline付近へ戻っただけでは3 Mbps復帰と判定しない。RECOVERYでは限定的なBackground probeで容量を確かめ、backlogを一気に流さずAudioを保護する。TBFのrateやmarkerをRelayの制御入力に使わない。0.8/1.2 Mbpsのrunnerや実験はまだ開始していない。
 
 ## 環境上の重要事項
 
