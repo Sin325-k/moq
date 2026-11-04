@@ -5,7 +5,7 @@
 
 ## 現在の到達点
 
-R/A/Bの各5回本測定と、A条件でのQUIC stats calibration 5回測定が完了した。次は適応制御Cの設計・実装であり、Cはまだ実装していない。
+R/A/Bの各5回本測定、A条件でのQUIC stats calibration 5回測定、Minimal adaptive Cの5回測定が完了した。次はRECOVERY制御の設計。Minimal Cは混雑検出後にBackgroundを停止したままとし、RECOVERYはまだ実装していない。
 
 条件:
 
@@ -104,7 +104,7 @@ paired B-A Background completion difference:
 
 今回の5回測定から、輻輳中にBackgroundの新規Group開始を停止することで、Audio遅延をAudio-onlyに近い水準まで改善できることが再現性をもって確認できた。
 
-BはOracle制御であり、RelayがTBFの1 Mbps / 3 Mbps切替時刻をmarkerから知っている。次の研究段階ではTBF markerを制御入力に使わず、QUIC統計からRelay自身が輻輳を検出する適応制御Cを実装する。Oracle BはCの性能上限・比較対象として使用する。
+BはOracle制御であり、RelayがTBFの1 Mbps / 3 Mbps切替時刻をmarkerから知っている。Minimal Cはmarkerを使わずQUIC RTTから輻輳を検出してBackgroundを停止する。Oracle BはCの比較対象として使用する。
 
 ## 以前のparallel実験から採用した結論
 
@@ -145,7 +145,22 @@ Audio終了後のBackground送信では、max in-flightを1から2、4へ増や�
 
 bytes lostとpackets lostは5回とも増加しなかった。3 Mbps復帰後、RTTがbaseline +1 ms以下に戻るまで1107.241 ± 29.597 ms、+2 ms以下まで1045.119 ± 23.902 msかかった。
 
-現時点のNORMAL→CONGESTED判定候補は`RTT > baseline median +1 ms`の3 sample連続。5回の測定では`+2 ms`と同じく誤検出0で、検出は約20 ms早かった。まだ制御閾値としてコードに固定していない。estimated send rateは現在のweb-transport-quinnでcwndとRTTから計算されるため、独立した混雑証拠ではなく補助指標として扱う。
+calibrationで選んだNORMAL→CONGESTED判定は`RTT > baseline median +1 ms`の3 sample連続。Minimal Cでは初期1秒のRTT medianをbaselineとして、この判定を実装・5回検証した。estimated send rateは現在のweb-transport-quinnでcwndとRTTから計算されるため、独立した混雑証拠ではなく補助指標として扱う。
+
+## Minimal adaptive C 5回測定結果
+
+`pilot1`と`run2`～`run5`を完了した。詳細な各run値とvalidationは`experiment/audio_priority/comparison_adaptive_c_runs1-5.txt`、実験条件とMinimal Cの動作は`experiment/audio_priority/ADAPTIVE_C.md`を参照。値は5回平均 ± run間の標本標準偏差。
+
+- NORMAL→CONGESTED: 5/5回で成功。1 Mbps切替から71.987 ± 12.980 ms（最小57.366、最大81.900 ms）
+- Backgroundの新規Group開始停止: 5/5回で検出と同じtick
+- 1 Mbps区間のAudio mean: 3.425 ± 0.047 ms
+- 1 Mbps区間のAudio p95: 13.067 ± 0.218 ms
+- 1 Mbps区間のAudio max: 25.780 ± 0.440 ms
+- Audio受信: 5/5回とも400/400、100%
+- AのAudio mean 81.101 msからCの3.425 msへ95.78%減少。Oracle Bのmeanは2.113 ms
+- Background受信率: 25.150 ± 0.137%。Minimal CはRECOVERY未実装のため、Bとの完了時間比較はできない
+
+RelayはTBF marker・現在帯域・切替時刻を判定に使用しない。TBF JSONLはoffline解析だけで使用する。
 
 ## 今回発生した解析問題と修正
 
@@ -185,14 +200,20 @@ completeとdropが同じsequenceに存在しても二重計上しない。CSV未
 - calibration解析: `experiment/audio_priority/analyze_stats_calibration.py`
 - calibration集計: `experiment/audio_priority/aggregate_stats_calibration_runs.py`
 - calibration 5回集計結果: `experiment/audio_priority/comparison_stats_calibration_runs1-5.txt`
+- Minimal Cの条件と結果: `experiment/audio_priority/ADAPTIVE_C.md`
+- Minimal Cの1 run実行: `experiment/audio_priority/run_adaptive_c_pilot.sh`
+- Minimal Cの5 run実行とresume: `experiment/audio_priority/run_adaptive_c_measurements.sh`
+- Minimal Cのrun validation: `experiment/audio_priority/analyze_adaptive_c.py`
+- Minimal Cの5 run集計: `experiment/audio_priority/aggregate_adaptive_c_runs.py`
+- Minimal Cの5回集計結果: `experiment/audio_priority/comparison_adaptive_c_runs1-5.txt`
 
 ## 次回やること
 
-適応制御Cのコードはまだ実装していない。次回は今回の検出候補と、3 Mbps復帰後もRTTが約1秒高く残る結果を踏まえ、以下の状態機械とBackground送信再開条件を設計する。
+Minimal CはNORMAL→CONGESTEDまで実装済み。次回はRECOVERYの状態遷移とcontrolled Background probeを設計・検証する。
 
 `NORMAL -> CONGESTED -> RECOVERY -> NORMAL`
 
-RECOVERYではBackground backlogを一気に送信してAudioを再度悪化させない方法も検討する。TBFのrateやmarkerをRelayの制御入力に使わない。Cの実装と実通信実験は、このcalibration結果をGitへ保存した後の別作業とする。
+Background停止後はAudio-only負荷が約0.78 Mbpsとなり、回線が1 MbpsのままでもRTTが低下し得る。RTTがbaseline付近へ戻っただけでは3 Mbps復帰と判定しない。RECOVERYでは限定的なBackground probeで容量を確かめ、backlogを一気に流さずAudioを保護する。TBFのrateやmarkerをRelayの制御入力に使わない。
 
 ## 環境上の重要事項
 

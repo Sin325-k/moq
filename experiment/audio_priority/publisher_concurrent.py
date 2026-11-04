@@ -17,7 +17,7 @@ INTERVAL = 0.020
 
 async def main() -> None:
     condition = os.environ["EXPERIMENT_CONDITION"]
-    if condition not in {"R", "A", "B"}:
+    if condition not in {"R", "A", "B", "C"}:
         raise ValueError(f"unknown experiment condition: {condition}")
 
     start_file = Path(os.environ["EXPERIMENT_START_FILE"])

@@ -2006,7 +2006,176 @@ struct BackgroundPhaseMarker {
 	wall_time_ns: u64,
 }
 
-const STATS_CALIBRATION_INTERVAL: Duration = Duration::from_millis(10);
+const BACKGROUND_STATS_INTERVAL: Duration = Duration::from_millis(10);
+const ADAPTIVE_C_BASELINE_WINDOW: Duration = Duration::from_secs(1);
+const ADAPTIVE_C_RTT_INFLATION_NS: u64 = 1_000_000;
+const ADAPTIVE_C_HIGH_SAMPLES: u8 = 3;
+
+#[derive(Default)]
+struct AdaptiveCDetector {
+	started: Option<web_async::time::Instant>,
+	baseline_samples: Vec<u64>,
+	baseline_ns: Option<u64>,
+	consecutive_high: u8,
+	congested: bool,
+}
+
+impl AdaptiveCDetector {
+	fn start(&mut self, now: web_async::time::Instant) {
+		self.started.get_or_insert(now);
+	}
+
+	fn observe(&mut self, now: web_async::time::Instant, rtt_ns: Option<u64>) -> bool {
+		let Some(started) = self.started else {
+			return false;
+		};
+		if self.congested {
+			return false;
+		}
+		if self.baseline_ns.is_none() {
+			if now.duration_since(started) < ADAPTIVE_C_BASELINE_WINDOW || self.baseline_samples.len() < 20 {
+				if let Some(rtt) = rtt_ns {
+					self.baseline_samples.push(rtt);
+				}
+				return false;
+			}
+			self.baseline_samples.sort_unstable();
+			let middle = self.baseline_samples.len() / 2;
+			self.baseline_ns = Some(if self.baseline_samples.len().is_multiple_of(2) {
+				((u128::from(self.baseline_samples[middle - 1]) + u128::from(self.baseline_samples[middle])) / 2)
+					.try_into()
+					.unwrap_or(u64::MAX)
+			} else {
+				self.baseline_samples[middle]
+			});
+			self.baseline_samples.clear();
+		}
+		let threshold = self
+			.baseline_ns
+			.expect("baseline was just set")
+			.saturating_add(ADAPTIVE_C_RTT_INFLATION_NS);
+		self.consecutive_high = if rtt_ns.is_some_and(|rtt| rtt > threshold) {
+			self.consecutive_high.saturating_add(1)
+		} else {
+			0
+		};
+		if self.consecutive_high >= ADAPTIVE_C_HIGH_SAMPLES {
+			self.congested = true;
+			return true;
+		}
+		false
+	}
+}
+
+#[cfg(test)]
+mod adaptive_c_tests {
+	use super::*;
+
+	#[test]
+	fn freezes_initial_median_then_requires_three_consecutive_high_samples() {
+		let start = web_async::time::Instant::now();
+		let mut detector = AdaptiveCDetector::default();
+		detector.start(start);
+		for sample in 0..100 {
+			let rtt = if sample % 2 == 0 { 150_000 } else { 250_000 };
+			assert!(!detector.observe(start + Duration::from_millis(sample * 10), Some(rtt)));
+		}
+		assert!(!detector.observe(start + Duration::from_secs(1), Some(1_200_000)));
+		assert_eq!(detector.baseline_ns, Some(200_000));
+		assert_eq!(detector.consecutive_high, 0);
+		for sample in 101..103 {
+			assert!(!detector.observe(start + Duration::from_millis(sample * 10), Some(1_200_001)));
+		}
+		assert!(!detector.observe(start + Duration::from_millis(1030), None));
+		for sample in 104..106 {
+			assert!(!detector.observe(start + Duration::from_millis(sample * 10), Some(1_200_001)));
+		}
+		assert!(detector.observe(start + Duration::from_millis(1060), Some(1_200_001)));
+		assert!(detector.congested);
+		assert!(!detector.observe(start + Duration::from_millis(1070), Some(1_200_001)));
+	}
+}
+
+struct AdaptiveCMonitor {
+	file: File,
+	opened: web_async::time::Instant,
+	baseline_started_wall_ns: Option<u64>,
+	transition_wall_ns: Option<u64>,
+	detector: AdaptiveCDetector,
+}
+
+impl AdaptiveCMonitor {
+	fn open(path: &Path) -> io::Result<Self> {
+		let mut file = OpenOptions::new().write(true).create_new(true).open(path)?;
+		writeln!(
+			file,
+			"monotonic_ns,wall_time_ns,rtt_ns,baseline_rtt_ns,threshold_rtt_ns,consecutive_high,state,background_pending,background_in_flight,baseline_started_wall_time_ns,transition_wall_time_ns,transition_reason"
+		)?;
+		Ok(Self {
+			file,
+			opened: web_async::time::Instant::now(),
+			baseline_started_wall_ns: None,
+			transition_wall_ns: None,
+			detector: AdaptiveCDetector::default(),
+		})
+	}
+
+	fn start_baseline(&mut self) {
+		if self.detector.started.is_none() {
+			self.detector.start(web_async::time::Instant::now());
+			self.baseline_started_wall_ns = Some(wall_time_ns());
+		}
+	}
+
+	fn sample<S: web_transport_trait::Session>(
+		&mut self,
+		session: &S,
+		pending: usize,
+		in_flight: usize,
+	) -> io::Result<bool> {
+		let now = web_async::time::Instant::now();
+		let wall_ns = wall_time_ns();
+		let rtt_ns = session
+			.stats()
+			.rtt()
+			.map(|rtt| rtt.as_nanos().try_into().unwrap_or(u64::MAX));
+		let transitioned = self.detector.observe(now, rtt_ns);
+		if transitioned {
+			self.transition_wall_ns = Some(wall_ns);
+			tracing::info!(
+				wall_time_ns = wall_ns,
+				rtt_ns,
+				baseline_rtt_ns = self.detector.baseline_ns,
+				consecutive_high = self.detector.consecutive_high,
+				pending,
+				in_flight,
+				"adaptive C NORMAL to CONGESTED: RTT above baseline +1 ms for 3 samples"
+			);
+		}
+		let value = |number: Option<u64>| number.map_or_else(String::new, |number| number.to_string());
+		let baseline = self.detector.baseline_ns;
+		let threshold = baseline.map(|value| value.saturating_add(ADAPTIVE_C_RTT_INFLATION_NS));
+		let reason = if transitioned {
+			"RTT above baseline +1 ms for 3 samples"
+		} else {
+			""
+		};
+		writeln!(
+			self.file,
+			"{},{wall_ns},{},{},{},{},{},{pending},{in_flight},{},{},{}",
+			now.duration_since(self.opened).as_nanos(),
+			value(rtt_ns),
+			value(baseline),
+			value(threshold),
+			self.detector.consecutive_high,
+			if self.detector.congested { "CONGESTED" } else { "NORMAL" },
+			value(self.baseline_started_wall_ns),
+			value(self.transition_wall_ns),
+			reason,
+		)?;
+		Ok(transitioned)
+	}
+}
 
 struct StatsCalibrationLogger {
 	file: File,
@@ -2134,6 +2303,17 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 		let mut end_sent = false;
 
 		let background = self.track_name.as_ref() == "background";
+		let adaptive_c = background && std::env::var_os("MOQ_BACKGROUND_ADAPTIVE_C").is_some_and(|value| value == "1");
+		let mut adaptive_monitor = if adaptive_c {
+			let path = std::env::var_os("MOQ_BACKGROUND_ADAPTIVE_C_LOG_CSV")
+				.ok_or_else(|| Error::Transport("missing MOQ_BACKGROUND_ADAPTIVE_C_LOG_CSV".to_owned()))?;
+			Some(
+				AdaptiveCMonitor::open(Path::new(&path))
+					.map_err(|err| Error::Transport(format!("adaptive C CSV: {err}")))?,
+			)
+		} else {
+			None
+		};
 		let mut stats_logger = if background {
 			std::env::var_os("MOQ_QUIC_STATS_CALIBRATION_CSV")
 				.map(|path| StatsCalibrationLogger::open(Path::new(&path)))
@@ -2145,17 +2325,17 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 		} else {
 			None
 		};
-		let mut stats_interval = stats_logger.as_ref().map(|_| {
-			let mut interval = web_async::time::interval(STATS_CALIBRATION_INTERVAL);
+		let mut stats_interval = (stats_logger.is_some() || adaptive_monitor.is_some()).then(|| {
+			let mut interval = web_async::time::interval(BACKGROUND_STATS_INTERVAL);
 			interval.set_missed_tick_behavior(web_async::time::MissedTickBehavior::Skip);
 			interval
 		});
 		let background_oracle =
-			background && std::env::var_os("MOQ_BACKGROUND_ORACLE").is_some_and(|value| value == "1");
-		let background_low_marker = background
+			background && !adaptive_c && std::env::var_os("MOQ_BACKGROUND_ORACLE").is_some_and(|value| value == "1");
+		let background_low_marker = (background && !adaptive_c)
 			.then(|| std::env::var_os("MOQ_BACKGROUND_LOW_MARKER").map(PathBuf::from))
 			.flatten();
-		let background_recovery_marker = background
+		let background_recovery_marker = (background && !adaptive_c)
 			.then(|| std::env::var_os("MOQ_BACKGROUND_RECOVERY_MARKER").map(PathBuf::from))
 			.flatten();
 		let mut pending_background: VecDeque<group::Consumer> = VecDeque::new();
@@ -2167,6 +2347,7 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 		let mut background_suppressed = false;
 		let mut background_recovered_at = None;
 		let mut background_backlog_drained = false;
+		let mut source_finished = false;
 
 		// Serve datagrams off this same subscriber, but only on lite-05 over a datagram-capable
 		// transport (qmux/WebSocket/TCP/UDS report size 0). No group fallback: otherwise off.
@@ -2184,7 +2365,7 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 
 		loop {
 			let event = {
-				let emit_boundary = emit_range && !end_sent && pending_end_group.is_none();
+				let emit_boundary = emit_range && !end_sent && pending_end_group.is_none() && !source_finished;
 				// SUBSCRIBE_UPDATE messages share this hot loop; safe because
 				// decode_maybe is cancel-safe given quinn/qmux's cancel-safe
 				// read primitives (see Reader::decode_maybe doc).
@@ -2214,7 +2395,9 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 					// group and, when enabled, the next best-effort datagram. Groups are polled
 					// first so a datagram burst can't starve them; datagrams flow whenever no
 					// group is ready (including while groups are parked above the cap).
-					if let Poll::Ready(res) = poll_recv_next(&mut track, datagrams, emit_boundary, waiter) {
+					if !source_finished
+						&& let Poll::Ready(res) = poll_recv_next(&mut track, datagrams, emit_boundary, waiter)
+					{
 						return Poll::Ready(Event::Recv(res));
 					}
 					Poll::Pending
@@ -2225,12 +2408,19 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 			match event {
 				Event::Task => {}
 				Event::StatsSample => {
+					if let Some(monitor) = &mut adaptive_monitor {
+						background_suppressed |= monitor
+							.sample(&self.session, pending_background.len(), tasks.len())
+							.map_err(|err| Error::Transport(format!("adaptive C CSV: {err}")))?;
+					}
 					if let Some(logger) = &mut stats_logger
 						&& let Err(err) = logger.sample(&self.session, pending_background.len(), tasks.len())
 					{
 						tracing::error!(%err, "failed to write QUIC stats calibration CSV");
 						stats_logger = None;
-						stats_interval = None;
+						if adaptive_monitor.is_none() {
+							stats_interval = None;
+						}
 					}
 				}
 				Event::BackgroundPhase => {
@@ -2293,6 +2483,10 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 								.await?;
 						}
 						if background {
+							if let Some(monitor) = &mut adaptive_monitor {
+								// The first data Group anchors the baseline to actual traffic.
+								monitor.start_baseline();
+							}
 							let position = pending_background
 								.iter()
 								.position(|pending| pending.sequence > group.sequence)
@@ -2324,6 +2518,15 @@ impl<S: web_transport_trait::Session> Subscription<S> {
 						}
 					}
 					Recv::Finished => {
+						if adaptive_c && background_suppressed {
+							// Keep pending Groups and the subscription alive until the peer cancels.
+							source_finished = true;
+							tracing::info!(
+								pending = pending_background.len(),
+								"adaptive C background held at producer finish"
+							);
+							continue;
+						}
 						// Drain pending and in-flight Background groups before its deferred end.
 						tracing::debug!(pending = pending_background.len(), "background finished");
 						while !pending_background.is_empty() || !tasks.is_empty() {

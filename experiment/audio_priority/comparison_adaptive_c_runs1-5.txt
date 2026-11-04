@@ -1,0 +1,80 @@
+# Minimal adaptive C, five-run comparison
+
+Runs: pilot1, run2, run3, run4, run5. SD is the between-run sample standard deviation (n-1).
+Wall timestamps are Unix nanoseconds. Detection latency is measured from the applied 1 Mbps TBF change using offline ground truth.
+
+## Detection
+
+| Run | baseline RTT median (ms) | threshold RTT (ms) | 1 Mbps applied wall ns | CONGESTED wall ns | detection latency (ms) |
+| --- | --- | --- | --- | --- | --- |
+| pilot1 | 0.177 | 1.177 | 1793776438220960544 | 1793776438302822991 | 81.862 |
+| run2 | 0.163 | 1.163 | 1793777754835780740 | 1793777754893147231 | 57.366 |
+| run3 | 0.195 | 1.195 | 1793777772627864308 | 1793777772708468982 | 80.605 |
+| run4 | 0.183 | 1.183 | 1793777790422405319 | 1793777790480604189 | 58.199 |
+| run5 | 0.150 | 1.150 | 1793777808204936252 | 1793777808286836478 | 81.900 |
+baseline RTT median (ms): 0.174 ± 0.017 (min=0.150, max=0.195)
+threshold RTT (ms): 1.174 ± 0.017 (min=1.150, max=1.195)
+switch-to-detection (ms): 71.987 ± 12.980 (min=57.366, max=81.900)
+Detected after 1 Mbps switch: 5/5 runs.
+
+## Background stop
+
+| Run | new-Group stop wall ns | same detection tick | pending at stop | in-flight at stop | maximum pending |
+| --- | --- | --- | --- | --- | --- |
+| pilot1 | 1793776438302822991 | yes | 1 | 1 | 299 |
+| run2 | 1793777754893147231 | yes | 0 | 1 | 300 |
+| run3 | 1793777772708468982 | yes | 0 | 1 | 299 |
+| run4 | 1793777790480604189 | yes | 0 | 1 | 300 |
+| run5 | 1793777808286836478 | yes | 0 | 1 | 299 |
+pending at stop: 0.200 ± 0.447 (min=0.000, max=1.000)
+in-flight at stop: 1.000 ± 0.000 (min=1.000, max=1.000)
+maximum pending: 299.400 ± 0.548 (min=299.000, max=300.000)
+
+## Audio, 1 Mbps phase
+
+| Run | mean (ms) | p95 (ms) | max (ms) | received | A-to-C mean reduction | C minus B mean (ms) |
+| --- | --- | --- | --- | --- | --- | --- |
+| pilot1 | 3.383 | 13.048 | 25.955 | 400/400 (100.0%) | 95.83% | +1.270 |
+| run2 | 3.377 | 13.363 | 26.360 | 400/400 (100.0%) | 95.84% | +1.264 |
+| run3 | 3.429 | 13.179 | 25.904 | 400/400 (100.0%) | 95.77% | +1.316 |
+| run4 | 3.492 | 12.956 | 25.401 | 400/400 (100.0%) | 95.69% | +1.379 |
+| run5 | 3.446 | 12.789 | 25.282 | 400/400 (100.0%) | 95.75% | +1.333 |
+Audio mean (ms): 3.425 ± 0.047 (min=3.377, max=3.492)
+Audio p95 (ms): 13.067 ± 0.218 (min=12.789, max=13.363)
+Audio max (ms): 25.780 ± 0.440 (min=25.282, max=26.360)
+Audio receive rate (%): 100.000 ± 0.000 (min=100.000, max=100.000)
+A-to-C mean latency reduction: 95.78% (per-run 95.776 ± 0.058 (min=95.694, max=95.836)%).
+C minus Oracle B: mean +1.312 ms; p95 +10.436 ms.
+
+## Background
+
+| Run | received | receive rate | maximum pending |
+| --- | --- | --- | --- |
+| pilot1 | 101/400 | 25.2% | 299 |
+| run2 | 100/400 | 25.0% | 300 |
+| run3 | 101/400 | 25.2% | 299 |
+| run4 | 100/400 | 25.0% | 300 |
+| run5 | 101/400 | 25.2% | 299 |
+Background receive rate (%): 25.150 ± 0.137 (min=25.000, max=25.250)
+Background completion time is not comparable with Oracle B because minimal C has no RECOVERY or Background resume policy.
+
+## R/A/B/C comparison, 1 Mbps Audio
+
+| Condition | mean (ms) | p95 (ms) |
+| --- | --- | --- |
+| R Audio-only | 1.995 | 2.572 |
+| A no control | 81.101 | 100.443 |
+| Oracle B | 2.113 | 2.631 |
+| C five-run mean | 3.425 | 13.067 |
+R/A/B values are the prior five-run summaries; their raw data is not reprocessed here.
+
+## Validation
+
+| Run | C transition | Audio 400/400 | TBF marker-free Relay log | analyzer revalidation | stop at detection tick |
+| --- | --- | --- | --- | --- | --- |
+| pilot1 | OK | OK | OK | OK | OK |
+| run2 | OK | OK | OK | OK | OK |
+| run3 | OK | OK | OK | OK | OK |
+| run4 | OK | OK | OK | OK | OK |
+| run5 | OK | OK | OK | OK | OK |
+The C runner removes Oracle marker environment variables; the Relay log contains a C transition and no Oracle phase events. TBF JSONL is read only after the run.
