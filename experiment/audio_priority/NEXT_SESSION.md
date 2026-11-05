@@ -5,7 +5,7 @@
 
 ## 現在の到達点
 
-R/A/Bの各5回本測定、A条件でのQUIC stats calibration 5回測定、Minimal adaptive Cの5回測定に加え、Adaptive C RECOVERYの固定3→1→3 Mbps条件での5-run再現性確認が完了した。次は異なるボトルネック帯域0.8 Mbps / 1.2 Mbpsで頑健性を評価する。現時点の再現性の結論は固定3→1→3 Mbps条件に限る。
+R/A/Bの各5回本測定、A条件でのQUIC stats calibration 5回測定、Minimal adaptive Cの5回測定に加え、Adaptive C RECOVERYの0.8 / 1.0 / 1.2 Mbps各5-run評価が完了した。固定されたローカル実験条件下で帯域ごとの挙動差の再現性を確認した。次の主要課題はAudio保護を維持しながらBackground backlog drainを高速化することで、候補手法はRecovery Boost。任意のネットワークへの一般化は未評価。
 
 条件:
 
@@ -140,7 +140,19 @@ Audio終了後のBackground送信では、max in-flightを1から2、4へ増や�
 - 1 Mbps Audio mean: 4.157 ± 0.244 ms、p95: 14.361 ± 2.049 ms。Audio受信は5/5回で400/400
 - Background受信: 5/5回で400/400。3 Mbps復帰後のbacklog解消は7624.326 ± 85.455 ms
 
-全runの状態遷移は`NORMAL→CONGESTED→(RECOVERY Stage 1→CONGESTED)×3→RECOVERY Stage 1→Stage 2→Stage 3→NORMAL`だった。固定した実験条件では状態遷移、Audio保護、Background回復の再現性を確認した。他の帯域条件や実ネットワークでの再現性は未評価。
+1.0 Mbpsの全runの状態遷移は`NORMAL→CONGESTED→(RECOVERY Stage 1→CONGESTED)×3→RECOVERY Stage 1→Stage 2→Stage 3→NORMAL`だった。この状態遷移の再現性は固定3→1→3 Mbps条件で確認した。0.8 / 1.2 Mbpsの結果は次節を参照。実ネットワークでの再現性は未評価。
+
+## Adaptive C帯域頑健性の5-run評価
+
+制御設定を固定し、3→0.8→3 Mbps（D1）、既存の3→1.0→3 Mbps（Recovery C）、3→1.2→3 Mbps（D2）を各5 run評価した。D1/D2はrawのQUIC CSV、TBF JSONL、Subscriber CSV、Relayログから再解析し、保存済みanalysisおよび5-run comparisonと一致した。値は5回平均 ± run間の標本標準偏差。詳細は`experiment/audio_priority/ADAPTIVE_C_BANDWIDTH.md`と`experiment/audio_priority/comparison_adaptive_c_bandwidth_0p8_1p0_1p2.txt`を参照。
+
+| ボトルネック | 検出 ms | Audio mean / p95 ms | ボトルネック中 | false NORMAL | 3 Mbps復帰→NORMAL ms | backlog drain ms | Audio / Background |
+| --- | ---: | ---: | --- | --- | ---: | ---: | --- |
+| 0.8 Mbps D1 | 79.310 ± 8.556 | 68.879 ± 1.900 / 92.012 ± 2.072 | RECOVERY 0回、5/5 run | 0/5 | 1735.138 ± 46.466 | 8712.365 ± 156.174 | 全runで各400/400 |
+| 1.0 Mbps Recovery C | 71.369 ± 11.332 | 4.157 ± 0.244 / 14.361 ± 2.049 | 各runでRECOVERY 3回 | 0/5 | 1050.569 ± 28.065 | 7624.326 ± 85.455 | 全runで各400/400 |
+| 1.2 Mbps D2 | 77.553 ± 14.517 | 2.918 ± 0.149 / 6.881 ± 0.382 | Stage 2到達、5/5 run | 0/5 | 717.784 ± 444.675 | 7005.127 ± 344.944 | 全runで各400/400 |
+
+0.8 Mbpsでは全runで完全受信したがAudio遅延が大きく、1.0 Mbpsでは低帯域中のRECOVERY probeがCONGESTEDへ戻り、1.2 Mbpsでは全runでStage 2へ進んだ。固定されたローカル実験条件下でこの帯域差を再現した。任意のネットワーク経路で同じ結果になるとは結論しない。
 
 ## QUIC stats calibration 5回測定結果
 
@@ -225,14 +237,20 @@ completeとdropが同じsequenceに存在しても二重計上しない。CSV未
 - RECOVERY Cの解析: `experiment/audio_priority/analyze_adaptive_c_recovery.py`
 - RECOVERY Cの5 run集計: `experiment/audio_priority/aggregate_adaptive_c_recovery_runs.py`
 - RECOVERY Cの5回集計結果: `experiment/audio_priority/comparison_adaptive_c_recovery_runs1-5.txt`
+- 帯域頑健性の条件と手順: `experiment/audio_priority/ADAPTIVE_C_BANDWIDTH.md`
+- 帯域頑健性の1 run実行: `experiment/audio_priority/run_adaptive_c_bandwidth_pilot.sh`
+- 帯域頑健性の5 run実行とresume: `experiment/audio_priority/run_adaptive_c_bandwidth_measurements.sh`
+- 帯域頑健性の解析: `experiment/audio_priority/analyze_adaptive_c_bandwidth.py`
+- 帯域頑健性の5 run集計: `experiment/audio_priority/aggregate_adaptive_c_bandwidth_runs.py`
+- 帯域頑健性の5回集計結果: `experiment/audio_priority/comparison_adaptive_c_bandwidth_0p8_1p0_1p2.txt`
 
 ## 次回やること
 
-固定3→1→3 Mbps条件でRECOVERY Cの5-run再現性は確認済み。次は同じ制御条件を変更せず、異なるボトルネック帯域0.8 Mbps / 1.2 Mbpsで頑健性を評価する。既存のrun成果物は上書きしない。
+Adaptive Cは0.8 / 1.0 / 1.2 Mbpsの各5-run評価を完了した。次の主要課題はAudio保護を維持しつつBackground backlog drainを高速化すること。Recovery Boostの設計とpilot実験が候補。既存のrun成果物は削除・上書きしない。
 
 `NORMAL -> CONGESTED -> RECOVERY -> NORMAL`
 
-Background停止後はAudio-only負荷が約0.78 Mbpsとなり、回線が1 MbpsのままでもRTTが低下し得る。RTTがbaseline付近へ戻っただけでは3 Mbps復帰と判定しない。RECOVERYでは限定的なBackground probeで容量を確かめ、backlogを一気に流さずAudioを保護する。TBFのrateやmarkerをRelayの制御入力に使わない。0.8/1.2 Mbpsのrunnerや実験はまだ開始していない。
+Background停止後はAudio-only負荷が約0.78 Mbpsとなり、回線が1 MbpsのままでもRTTが低下し得る。RTTがbaseline付近へ戻っただけでは3 Mbps復帰と判定しない。現行RECOVERYでは限定的なBackground probeで容量を確かめ、backlogを一気に流さずAudioを保護する。TBFのrateやmarkerをRelayの制御入力に使わない。Recovery BoostでもAudio保護を評価基準とし、固定ローカル条件での結果を任意のネットワークへ一般化しない。
 
 ## 環境上の重要事項
 

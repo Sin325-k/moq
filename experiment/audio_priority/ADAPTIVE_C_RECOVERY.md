@@ -42,4 +42,16 @@ The report covers detection, 1 Mbps probe and false-NORMAL behavior, stage progr
 | 3 Mbps switch to NORMAL | 1050.569 ± 28.065 ms |
 | Background backlog drain after restoration | 7624.326 ± 85.455 ms |
 
-All five runs had three low-rate RECOVERY probes return to CONGESTED, zero false NORMAL transitions before restoration, and Stage 1 -> Stage 2 -> Stage 3 -> NORMAL after restoration. Audio and Background both reached 400/400 in every run. The state transition sequence matched in all five runs. This establishes repeatability for the fixed 3 -> 1 -> 3 Mbps test condition. Robustness at 0.8 Mbps, 1.2 Mbps, and on real networks remains untested.
+All five runs had three low-rate RECOVERY probes return to CONGESTED, zero false NORMAL transitions before restoration, and Stage 1 -> Stage 2 -> Stage 3 -> NORMAL after restoration. Audio and Background both reached 400/400 in every run. The state transition sequence matched in all five runs.
+
+## Bandwidth robustness at 0.8 / 1.0 / 1.2 Mbps
+
+The same Adaptive C control was evaluated in five runs at each bottleneck rate under fixed local 3 -> bottleneck -> 3 Mbps conditions. D1 (0.8 Mbps) and D2 (1.2 Mbps) use the procedure in `ADAPTIVE_C_BANDWIDTH.md`; 1.0 Mbps uses the Recovery C runs above. The saved reports are `comparison_adaptive_c_D1_0p8mbps_runs1-5.txt`, `comparison_adaptive_c_recovery_runs1-5.txt`, `comparison_adaptive_c_D2_1p2mbps_runs1-5.txt`, and `comparison_adaptive_c_bandwidth_0p8_1p0_1p2.txt`. Values are five-run means ± between-run sample SD.
+
+| Bottleneck | Detection ms | Audio mean / p95 ms | Low-rate RECOVERY behavior | False NORMAL | Restoration to NORMAL ms | Backlog drain ms | Audio / Background |
+| --- | ---: | ---: | --- | --- | ---: | ---: | --- |
+| 0.8 Mbps D1 | 79.310 ± 8.556 | 68.879 ± 1.900 / 92.012 ± 2.072 | 0 entries in all 5 runs | 0/5 | 1735.138 ± 46.466 | 8712.365 ± 156.174 | 400/400 each in all 5 runs |
+| 1.0 Mbps Recovery C | 71.369 ± 11.332 | 4.157 ± 0.244 / 14.361 ± 2.049 | 3 entries and 3 returns to CONGESTED per run | 0/5 | 1050.569 ± 28.065 | 7624.326 ± 85.455 | 400/400 each in all 5 runs |
+| 1.2 Mbps D2 | 77.553 ± 14.517 | 2.918 ± 0.149 / 6.881 ± 0.382 | Stage 2 reached in all 5 runs | 0/5 | 717.784 ± 444.675 | 7005.127 ± 344.944 | 400/400 each in all 5 runs |
+
+The three rates show repeatable differences under these fixed local conditions. Audio latency rises sharply at 0.8 Mbps despite complete delivery, while 1.2 Mbps permits Stage 2 probes during the bottleneck. These measurements do not establish behavior on arbitrary network paths. The next research task is to shorten Background backlog drain while preserving Audio protection. Recovery Boost is the candidate method to design and pilot.
