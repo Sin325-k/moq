@@ -60,3 +60,18 @@ jsr.json
 *.stackdump
 *.save
 *.save.*
+
+# Generated audio priority experiment data and logs.
+/experiment/audio_priority/subscriber_*.csv
+/experiment/audio_priority/subscriber_*.txt
+/experiment/audio_priority/publisher_*.txt
+/experiment/audio_priority/relay_*.txt
+/experiment/audio_priority/relay_defer_all_*.csv
+/experiment/audio_priority/quic_*.csv
+/experiment/audio_priority/tbf_*.jsonl
+/experiment/audio_priority/tbf_*.txt
+/experiment/audio_priority/bg_parallel*.csv
+/experiment/audio_priority/concurrent_[RAB]_3to1to3_*.csv
+/experiment/audio_priority/results_20??????_??????.csv
+/results_20??????_??????.csv
+/demo/relay/relay_debug*.txt
