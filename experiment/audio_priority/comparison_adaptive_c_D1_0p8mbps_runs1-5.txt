@@ -1,0 +1,95 @@
+# Adaptive C D1, five-run bandwidth comparison
+
+TBF: 3 -> 0.8 -> 3 Mbps. Values come from validated raw artifacts. SD uses n-1.
+
+## Detection
+
+| run | baseline ms | threshold ms | switch to CONGESTED ms | pending/in-flight at stop |
+| --- | --- | --- | --- | --- |
+| pilot1 | 0.173 | 1.173 | 77.070 | 1/1 |
+| run2 | 0.190 | 1.190 | 84.931 | 1/1 |
+| run3 | 0.171 | 1.171 | 68.042 | 1/1 |
+| run4 | 0.161 | 1.161 | 90.258 | 1/1 |
+| run5 | 0.183 | 1.183 | 76.247 | 1/1 |
+baseline RTT (ms): 0.176 ± 0.011 (min=0.161, max=0.190; n=5/5)
+threshold RTT (ms): 1.176 ± 0.011 (min=1.161, max=1.190; n=5/5)
+detection (ms): 79.310 ± 8.556 (min=68.042, max=90.258; n=5/5)
+pending at stop: 1.000 ± 0.000 (min=1.000, max=1.000; n=5/5)
+in-flight at stop: 1.000 ± 0.000 (min=1.000, max=1.000; n=5/5)
+
+## Bottleneck Audio
+
+| run | mean/p95/max ms | received |
+| --- | --- | --- |
+| pilot1 | 71.340/93.625/96.958 | 400/400 (100.0%) |
+| run2 | 69.449/92.481/93.489 | 400/400 (100.0%) |
+| run3 | 69.673/92.371/93.721 | 400/400 (100.0%) |
+| run4 | 66.737/93.161/94.278 | 400/400 (100.0%) |
+| run5 | 67.195/88.420/90.387 | 400/400 (100.0%) |
+Audio mean (ms): 68.879 ± 1.900 (min=66.737, max=71.340; n=5/5)
+Audio p95 (ms): 92.012 ± 2.072 (min=88.420, max=93.625; n=5/5)
+Audio max (ms): 93.767 ± 2.342 (min=90.387, max=96.958; n=5/5)
+Audio receive rate (%): 100.000 ± 0.000 (min=100.000, max=100.000; n=5/5)
+
+## RECOVERY during bottleneck
+
+| run | entries | probe start/complete | stage 1/2/3 complete | RECOVERY to CONGESTED | false NORMAL | RTT max ms |
+| --- | --- | --- | --- | --- | --- | --- |
+| pilot1 | 0 | 0/0 | 0/0/0 | 0 | 0 | none |
+| run2 | 0 | 0/0 | 0/0/0 | 0 | 0 | none |
+| run3 | 0 | 0/0 | 0/0/0 | 0 | 0 | none |
+| run4 | 0 | 0/0 | 0/0/0 | 0 | 0 | none |
+| run5 | 0 | 0/0 | 0/0/0 | 0 | 0 | none |
+RECOVERY entries: 0.000 ± 0.000 (min=0.000, max=0.000; n=5/5)
+probe starts: 0.000 ± 0.000 (min=0.000, max=0.000; n=5/5)
+probe completes: 0.000 ± 0.000 (min=0.000, max=0.000; n=5/5)
+stage 1 completes: 0.000 ± 0.000 (min=0.000, max=0.000; n=5/5)
+stage 2 completes: 0.000 ± 0.000 (min=0.000, max=0.000; n=5/5)
+stage 3 completes: 0.000 ± 0.000 (min=0.000, max=0.000; n=5/5)
+RECOVERY to CONGESTED: 0.000 ± 0.000 (min=0.000, max=0.000; n=5/5)
+RECOVERY RTT max (ms): not observed (0/5)
+False NORMAL before restoration: 5/5 runs had zero; total=0.
+Runs with zero RECOVERY entries during bottleneck: 5/5.
+
+## 3 Mbps restoration
+
+| run | switch to RECOVERY ms | successful stage 1 -> 2 -> 3 | switch to NORMAL ms | NORMAL returned | Audio mean/p95/max ms |
+| --- | --- | --- | --- | --- | --- |
+| pilot1 | 840.718 | 1@840.718ms→2@1140.760ms→3@1460.875ms | 1771.520 | yes | 2.401/2.999/19.235 |
+| run2 | 777.835 | 1@777.835ms→2@1107.967ms→3@1407.972ms | 1708.221 | yes | 2.314/3.029/19.836 |
+| run3 | 816.482 | 1@816.482ms→2@1117.473ms→3@1427.289ms | 1777.598 | yes | 2.271/3.003/13.086 |
+| run4 | 748.547 | 1@748.547ms→2@1058.047ms→3@1358.252ms | 1667.719 | yes | 2.163/2.926/5.662 |
+| run5 | 800.769 | 1@800.769ms→2@1110.878ms→3@1420.347ms | 1750.632 | yes | 2.323/3.010/20.674 |
+switch to RECOVERY (ms): 796.870 ± 35.426 (min=748.547, max=840.718; n=5/5)
+switch to Stage 2 (ms): 1107.025 ± 30.256 (min=1058.047, max=1140.760; n=5/5)
+switch to Stage 3 (ms): 1414.947 ± 37.262 (min=1358.252, max=1460.875; n=5/5)
+switch to NORMAL (ms): 1735.138 ± 46.466 (min=1667.719, max=1777.598; n=5/5)
+restored Audio mean (ms): 2.294 ± 0.087 (min=2.163, max=2.401; n=5/5)
+restored Audio p95 (ms): 2.994 ± 0.039 (min=2.926, max=3.029; n=5/5)
+restored Audio max (ms): 15.698 ± 6.363 (min=5.662, max=20.674; n=5/5)
+Switch-to-RECOVERY is 0 ms when RECOVERY is already active at the 3 Mbps switch. Negative stage times show a stage reached before that switch.
+
+## Background
+
+| run | received | pending at restoration | completion from start ms | backlog drain ms |
+| --- | --- | --- | --- | --- |
+| pilot1 | 400/400 | 94 | 12530.245 | 8522.217 |
+| run2 | 400/400 | 94 | 12750.393 | 8739.874 |
+| run3 | 400/400 | 94 | 12940.910 | 8938.756 |
+| run4 | 400/400 | 94 | 12629.919 | 8619.814 |
+| run5 | 400/400 | 95 | 12749.863 | 8741.163 |
+pending at restoration: 94.200 ± 0.447 (min=94.000, max=95.000; n=5/5)
+completion from start (ms): 12720.266 ± 153.898 (min=12530.245, max=12940.910; n=5/5)
+backlog drain (ms): 8712.365 ± 156.174 (min=8522.217, max=8938.756; n=5/5)
+Background 400/400: 5/5 runs.
+
+## Validation
+
+| run | Audio 400/400 | Background 400/400 | in-flight <=1 | marker-free | false NORMAL=0 | NORMAL after restoration | analyzer revalidation |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| pilot1 | OK | OK | OK | OK | OK | OK | OK |
+| run2 | OK | OK | OK | OK | OK | OK | OK |
+| run3 | OK | OK | OK | OK | OK | OK | OK |
+| run4 | OK | OK | OK | OK | OK | OK | OK |
+| run5 | OK | OK | OK | OK | OK | OK | OK |
+The table records validated observations. D1/D2 bottleneck RECOVERY counts are not fixed in advance.

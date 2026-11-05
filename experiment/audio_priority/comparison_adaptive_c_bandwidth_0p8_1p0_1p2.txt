@@ -1,0 +1,13 @@
+# Adaptive C bandwidth comparison: 0.8 / 1.0 / 1.2 Mbps
+
+Each condition uses five validated raw runs. Mean ± between-run sample SD includes min/max. The 1.0 Mbps runs are reloaded from the existing RECOVERY artifacts.
+
+| bottleneck | detection ms | Audio mean ms | Audio p95 ms | false NORMAL | Stage 2 reached in bottleneck | restoration to NORMAL ms | backlog drain ms | Audio 400/400 | Background 400/400 |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.8 Mbps D1 | 79.310 ± 8.556 (min=68.042, max=90.258; n=5/5) | 68.879 ± 1.900 (min=66.737, max=71.340; n=5/5) | 92.012 ± 2.072 (min=88.420, max=93.625; n=5/5) | 5/5 zero | 0/5 | 1735.138 ± 46.466 (min=1667.719, max=1777.598; n=5/5) | 8712.365 ± 156.174 (min=8522.217, max=8938.756; n=5/5) | 5/5 | 5/5 |
+| 1.0 Mbps Recovery C | 71.369 ± 11.332 (min=58.710, max=81.355; n=5/5) | 4.157 ± 0.244 (min=3.812, max=4.422; n=5/5) | 14.361 ± 2.049 (min=11.692, max=16.815; n=5/5) | 5/5 zero | 0/5 | 1050.569 ± 28.065 (min=1002.987, max=1076.172; n=5/5) | 7624.326 ± 85.455 (min=7535.169, max=7719.172; n=5/5) | 5/5 | 5/5 |
+| 1.2 Mbps D2 | 77.553 ± 14.517 (min=59.136, max=92.712; n=5/5) | 2.918 ± 0.149 (min=2.704, max=3.093; n=5/5) | 6.881 ± 0.382 (min=6.491, max=7.340; n=5/5) | 5/5 zero | 5/5 | 717.784 ± 444.675 (min=336.104, max=1286.625; n=5/5) | 7005.127 ± 344.944 (min=6717.611, max=7467.996; n=5/5) | 5/5 | 5/5 |
+
+D1 runs with zero low-rate RECOVERY entries: 5/5.
+D2 runs with low-rate Stage 2 completion: 5/5.
+The three bandwidths are distinct fixed test conditions. Do not extrapolate to other links or network paths from this table.

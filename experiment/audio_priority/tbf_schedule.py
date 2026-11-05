@@ -19,7 +19,11 @@ def parse_args():
     parser.add_argument("--stop-file", required=True, type=Path)
     parser.add_argument("--low-marker-file", type=Path)
     parser.add_argument("--recovery-marker-file", type=Path)
-    return parser.parse_args()
+    parser.add_argument("--bottleneck-kbit", type=int, default=1000)
+    args = parser.parse_args()
+    if not 0 < args.bottleneck_kbit < 3000:
+        parser.error("--bottleneck-kbit must be between 1 and 2999")
+    return args
 
 
 def tc(*args):
@@ -121,12 +125,12 @@ def main():
             elapsed = (now_ns - experiment_start_ns) / 1_000_000_000
             if not low_applied and elapsed >= 2:
                 change_rate(
-                    1000,
+                    args.bottleneck_kbit,
                     "low_rate",
                     experiment_start_ns,
                     args.low_marker_file,
                 )
-                current_rate = 1000
+                current_rate = args.bottleneck_kbit
                 low_applied = True
             if not recovery_applied and elapsed >= 4:
                 change_rate(
